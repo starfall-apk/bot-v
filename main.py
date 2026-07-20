@@ -1,5 +1,5 @@
 """
-MM2 Values Telegram Bot (v2.5.0)
+MM2 Values Telegram Bot (v2.6.0)
 =================================
 Изменения в этой версии:
 - ИСПРАВЛЕНО: бот запускается на Render как Web Service, но не открывал
@@ -7,19 +7,13 @@ MM2 Values Telegram Bot (v2.5.0)
   $PORT (или 10000, если переменная не задана), который отвечает на любой
   запрос "OK". Это удовлетворяет требованию Render о том, что Web Service
   обязан слушать порт, и убирает ошибку "No open ports detected".
-- ИСПРАВЛЕНО (главная причина, по которой поиск не работал и картинка была
-  "N A.png"): реальная HTML-структура supremevalues.com не содержит классов
-  itemcolumn/itemhead/itemvalue/itemimage, которые предполагал старый
-  парсер. Из-за этого fetch_category молча создавал предметы с пустыми
-  именами и пустым image_url — кэш "обновлялся" (0 предметов не было, но
-  почти все — мусор), поиск не находил совпадений, а create_item_image не
-  мог скачать картинку (потому что item.image_url был пустой строкой) и
-  рисовал заглушку "?". Парсер переписан так, чтобы не зависеть от точных
-  CSS-классов сайта: он ищет каждую картинку предмета по паттерну
-  src="/media/mm2<категория>/Имя.png" и вытаскивает имя/значение/
-  стабильность/происхождение из окружающего текстового блока по регуляркам,
-  которые соответствуют реальному тексту страницы вида:
-  "Value - **17**", "Stability - **Stable**", "Origin - Xmas 2018 (Crafted)".
+- ОТКАТ: в промежуточной версии парсинг карточек предмета был переписан на
+  поиск "от картинки" (по паттерну src="/media/mm2<категория>/Имя.png"), но
+  это сломало поиск — карточки перестали находиться. Логика парсинга
+  разметки (селекторы div.itemcolumn / itemhead / itemvalue / itemimage и
+  data-атрибуты карточки) возвращена к исходному, проверенно рабочему
+  варианту без изменений. Обновлена только обвязка вокруг запроса к
+  ScrapingAnt (retry/заголовки, см. ниже) — сам парсинг HTML не трогали.
 - Убран кастомный HTTPAdapter, вызывавший TypeError на urllib3 2.x
   (PoolKey.__new__() got an unexpected keyword argument 'key_max_header_size').
 - Каждая категория теперь запрашивается новой сессией/новыми заголовками,
@@ -31,6 +25,7 @@ MM2 Values Telegram Bot (v2.5.0)
   устоявшихся фраз, а транслитерирует/переводит слова так, как их обычно
   переводит сам Roblox (например Blade -> Лезвие, а не Клинок), с учётом
   словосочетаний вроде "ледокол арбалет"/"ледокол топор".
+- ДОБАВЛЕНО: Расширенное логирование и сохранение HTML-ответов для дебага парсера.
 """
 
 from __future__ import annotations
@@ -204,32 +199,6 @@ def generate_query_variants(raw_query: str) -> list[str]:
 # --------------------------------------------------------------------------- #
 # Автоматический перевод названий (в стиле локализации Roblox/MM2-комьюнити)
 # --------------------------------------------------------------------------- #
-#
-# Раньше здесь был огромный ручной словарь ПОЛНЫХ фраз (RU_NAMES), который
-# приходилось поддерживать вручную под каждый новый предмет и который не
-# совпадал с тем, как эти слова реально переводит Roblox/устоявшееся
-# русскоязычное MM2-комьюнити (например "Blade" переводят как "Лезвие",
-# а не "Клинок").
-#
-# Теперь перевод полностью автоматический и работает на уровне КОРНЕЙ/МОРФЕМ:
-#  1. Название разбивается на слова — как по пробелам/апострофам, так и
-#     внутри "слитных" английских составных слов вида "Ghostblade",
-#     "Nightblade", "Icebreaker" (разбиваем по известным
-#     суффиксам-морфемам: blade, gun, axe, shard, blaster, cane, ...).
-#  2. Каждый кусок ищется в ROOT_TRANSLATIONS (общий словарь корней,
-#     которым Roblox/комьюнити переводит одинаково независимо от того,
-#     в каком предмете слово встретилось).
-#  3. Отдельные "неразбиваемые" составные названия, которые комьюнити
-#     переводит одним словом целиком, а не по частям (например
-#     "Icebreaker" -> "Ледокол", а не "Лёд" + "Ломающий"), хранятся в
-#     MERGED_COMPOUND_OVERRIDES — это единственное место, которое вообще
-#     похоже на "словарь целых фраз", и оно намеренно маленькое: только
-#     туда, где раздельный перевод по корням даёт не тот результат,
-#     который использует комьюнити.
-#
-# Благодаря этому человек может ввести название ровно так, как его даёт
-# Roblox, и не нужно вручную дописывать перевод под каждый новый предмет —
-# новые слова, составленные из уже известных корней, переводятся сами.
 
 ROOT_TRANSLATIONS: dict[str, str] = {
     # --- Оружие / типы предметов ---
@@ -298,20 +267,12 @@ ROOT_TRANSLATIONS: dict[str, str] = {
     "splitter": "Разделитель", "harvest": "Урожай",
 }
 
-# Известные суффиксы-морфемы, по которым слитные английские слова
-# (без пробела) делятся на "тема" + "тип предмета", например:
-# "Ghostblade" -> "Ghost" + "blade", "Nightblade" -> "Night" + "blade".
-# Порядок важен: сначала длинные суффиксы, чтобы "raygun" не резался как
-# "ray" + "gun" там, где raygun уже есть отдельным словом.
 COMPOUND_SUFFIXES: list[str] = [
     "battleaxe", "raygun", "handsaw", "logchopper",
     "blade", "blaster", "shard", "cane", "beam", "wing", "gun",
     "axe", "saw", "flake",
 ]
 
-# Составные названия, которые русскоязычное MM2-комьюнити переводит целиком
-# одним словом, а не по частям (раздельный перевод корней дал бы другой,
-# не совпадающий с общепринятым результат).
 MERGED_COMPOUND_OVERRIDES: dict[str, str] = {
     "icebreaker": "Ледокол",
     "icecrusher": "Ледокрушитель",
@@ -348,11 +309,7 @@ MERGED_COMPOUND_OVERRIDES: dict[str, str] = {
     "evergun": "Вечнозелёный пистолет",
 }
 
-
 def _split_compound_word(word: str) -> list[str]:
-    """Делит слитное английское слово на части по известным суффиксам,
-    например 'Ghostblade' -> ['Ghost', 'blade']. Если суффикс не найден,
-    возвращает слово как есть (одним элементом)."""
     lower = word.lower()
     for suffix in COMPOUND_SUFFIXES:
         if lower.endswith(suffix) and len(lower) > len(suffix):
@@ -360,16 +317,10 @@ def _split_compound_word(word: str) -> list[str]:
             return [head, suffix]
     return [word]
 
-
 def _normalize_apostrophe(text: str) -> str:
     return text.replace("’", "'")
 
-
 def _translate_token(token: str) -> str:
-    """Ищет перевод слова в ROOT_TRANSLATIONS. Пробует как есть, без
-    завершающей пунктуации, и — для притяжательной формы вида "Vampire's" —
-    также базовую форму без 's/s', поскольку словарь хранит только
-    базовое слово (например "vampire"), а не каждую его форму."""
     normalized = _normalize_apostrophe(token).lower().strip(".,()")
     candidates = [normalized]
     if normalized.endswith("'s"):
@@ -382,10 +333,7 @@ def _translate_token(token: str) -> str:
             return ROOT_TRANSLATIONS[key]
     return token
 
-
 def auto_translate_ru(name_en: str) -> str:
-    """Полностью автоматический перевод английского названия предмета на
-    русский по корням/морфемам — без ручного словаря целых фраз."""
     raw_words = name_en.split()
     translated_parts: list[str] = []
     i = 0
@@ -395,10 +343,6 @@ def auto_translate_ru(name_en: str) -> str:
         raw_word = raw_words[i]
         stripped = raw_word.strip(".,()")
 
-        # Сначала пробуем словосочетание из ДВУХ слов подряд (например
-        # "Old Glory", "Ice Dragon"), если оно целиком есть в словаре —
-        # это позволяет переводить устойчивые двухсловные названия так,
-        # как их знает комьюнити, не разбивая по отдельным корням.
         if i + 1 < n:
             next_stripped = raw_words[i + 1].strip(".,()")
             two_word_key = f"{_normalize_apostrophe(stripped).lower()} {_normalize_apostrophe(next_stripped).lower()}"
@@ -423,21 +367,16 @@ def auto_translate_ru(name_en: str) -> str:
             i += 1
             continue
 
-        # Слово не нашлось целиком — пробуем разбить как слитный композит
-        # (например "Nightblade" -> "Night" + "blade").
         pieces = _split_compound_word(stripped)
         if len(pieces) > 1:
             translated_parts.append(
                 " ".join(_translate_token(p) for p in pieces)
             )
         else:
-            # Совсем неизвестное слово — оставляем как в оригинале, чтобы
-            # не придумывать перевод от себя.
             translated_parts.append(raw_word)
         i += 1
 
     return " ".join(translated_parts)
-
 
 def get_ru_name(name_en: str) -> str:
     key = name_en.lower().strip()
@@ -473,13 +412,6 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
     target_url = f"{BASE_URL}/mm2/{slug}"
     api_url = f"https://api.scrapingant.com/v2/general?url={target_url}&x-api-key={SCRAPINGANT_API_KEY}&browser=true"
 
-    # Явно задаём короткий, минимальный набор заголовков и НЕ переиспользуем
-    # Session между категориями. Общая Session накапливает Set-Cookie от
-    # ScrapingAnt на каждый запрос, и после нескольких категорий суммарный
-    # объём заголовков/кук в исходящем запросе может превысить лимиты
-    # urllib3/сервера — именно это чаще всего стоит за "огромным количеством
-    # заголовков". Новый requests.get(...) на каждую категорию = чистое
-    # состояние без унаследованных cookie.
     request_headers = {
         "User-Agent": "Mozilla/5.0 (compatible; MM2ValuesBot/1.0)",
         "Accept": "application/json",
@@ -495,6 +427,15 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
                 headers=request_headers,
             )
             if resp.status_code == 200:
+                # --- ДЕБАГ: Проверяем наличие карточек и сохраняем ответ ---
+                if "itemcolumn" not in resp.text:
+                    logger.error(f"В ответе нет 'itemcolumn' для категории {slug}! Сохраняем в файл debug_error_{slug}.html")
+                    try:
+                        with open(f"debug_error_{slug}.html", "w", encoding="utf-8") as f:
+                            f.write(resp.text)
+                    except Exception as e:
+                        logger.error(f"Не удалось сохранить файл для {slug}: {e}")
+                # -----------------------------------------------------------
                 break
             elif resp.status_code == 409:
                 logger.warning("ScrapingAnt 409 для '%s', попытка %d/%d", slug, attempt, MAX_RETRIES)
@@ -527,121 +468,64 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
     items: list[Item] = []
     seen_names: set[str] = set()
 
-    # ВАЖНО: реальная разметка supremevalues.com НЕ содержит классов вида
-    # itemcolumn/itemhead/itemvalue/itemimage — это была ошибочная
-    # догадка, из-за которой find_all(...) выше всегда возвращал пустой
-    # список, а бот при этом не падал с ошибкой (парсинг "успешно"
-    # завершался нулём/мусорными предметами).
-    #
-    # На реальной странице каждый предмет — это картинка с адресом вида
-    #   /media/mm2<slug>/Имя_Предмета.png
-    # и рядом с ней (в том же родительском блоке/строке таблицы) идёт текст
-    # вида:
-    #   Traveler's Gun  ... Value - **5,200** ... Ranged Value - [**5,200 - 5,400**]
-    #   ... Stability - **Doing Well** ... Origin - Hallows 2023 (Unboxed) ...
-    #
-    # Поэтому парсим "от картинки": находим все img с нужным src, поднимаемся
-    # к ближайшему общему родительскому блоку (строке/ячейке предмета) и
-    # вытаскиваем оттуда значения по регуляркам, а не по CSS-классам. Это
-    # устойчиво к небольшим изменениям вёрстки сайта.
-    img_src_pattern = re.compile(rf"/media/mm2{re.escape(slug)}/", re.IGNORECASE)
+    for card in soup.find_all("div", class_="itemcolumn"):
+        head_tag = card.find("div", class_="itemhead")
+        btn_tag = card.find("button")
 
-    value_re = re.compile(r"Value\s*-\s*\*{0,2}([\d,]+|N/?A)\*{0,2}", re.IGNORECASE)
-    ranged_re = re.compile(r"Ranged Value\s*-\s*\[?\*{0,2}([^\]\*]+?)\*{0,2}\]", re.IGNORECASE)
-    # Стабильность матчим по белому списку известных значений сайта, а не
-    # "до первого пробела/звёздочки" — так надёжнее, потому что некоторые
-    # значения сами состоят из двух слов (например "Doing Well",
-    # "Underpaid For"), и жадность/нежадность regex тут не спасает.
-    _known_stabilities = sorted(STABILITY_MAP_RU.keys(), key=len, reverse=True)
-    stability_re = re.compile(
-        r"Stability\s*-\s*\*{0,2}(" + "|".join(re.escape(s) for s in _known_stabilities) + r")",
-        re.IGNORECASE,
-    )
-    # BeautifulSoup.get_text(" ", strip=True) схлопывает все пробелы в
-    # одинарные, поэтому останавливаемся именно на "Last Change" (а не на
-    # "двух и более пробелах", которых в нормализованном тексте не бывает).
-    origin_re = re.compile(r"Origin\s*-\s*(.+?)(?:\s*Last Change|$)", re.IGNORECASE)
+        display_name = ""
+        if btn_tag and btn_tag.get("data-name"):
+            display_name = btn_tag.get("data-name").strip()
+        elif head_tag:
+            display_name = head_tag.get_text(strip=True)
 
-    for img_tag in soup.find_all("img", src=img_src_pattern):
-        src = img_tag.get("src", "")
-        if not src:
-            continue
-
-        # Определяем "карточку" предмета: ближайший родитель, у которого
-        # достаточно текста (значение/стабильность и т.д.). Поднимаемся по
-        # дереву вверх, пока не найдём блок с ключевым словом "Value".
-        card = img_tag.parent
-        card_text = ""
-        for _ in range(6):
-            if card is None:
-                break
-            card_text = card.get_text(" ", strip=True)
-            if "Value" in card_text:
-                break
-            card = card.parent
-
-        if not card_text:
-            continue
-
-        # Имя предмета: берём атрибут alt картинки (обычно совпадает с
-        # именем файла/предмета), иначе — первое слово текста карточки до
-        # "Value". Alt на этом сайте, как правило, самый надёжный источник
-        # (см. пример: alt="Travelers Gun", alt="Ginger Luger" и т.д.).
-        display_name = (img_tag.get("alt") or "").strip()
-        if not display_name:
-            # Резервный вариант: имя файла из src, с заменой "_" на пробел.
-            filename = src.rsplit("/", 1)[-1]
-            filename = re.sub(r"\.(png|jpg|jpeg|webp)$", "", filename, flags=re.IGNORECASE)
-            display_name = filename.replace("_", " ").strip()
         if not display_name:
             continue
 
-        # На сайте иногда alt/подпись содержит уточнение в скобках, напр.
-        # "Sunset (Knife)" — такие уточнения не входят в реальное игровое
-        # название предмета, убираем их только из отображаемого имени.
-        display_name = re.sub(r"\s*\([^)]*\)\s*$", "", display_name).strip()
-
-        name_key = display_name.lower()
-        if name_key in seen_names:
+        if display_name.lower() in seen_names:
             continue
-        seen_names.add(name_key)
+        seen_names.add(display_name.lower())
 
-        value_match = value_re.search(card_text)
-        value_raw = value_match.group(1) if value_match else "N/A"
+        val_tag = card.find("b", class_="itemvalue")
+        if val_tag:
+            value_raw = val_tag.get_text(strip=True)
+        else:
+            value_raw = card.get("data-value", "N/A")
+
         value_int = _parse_value_to_int(value_raw)
         value_display = value_raw if value_int is None else f"{value_int:,}".replace(",", " ")
 
-        ranged_match = ranged_re.search(card_text)
-        ranged_value = ranged_match.group(1).strip() if ranged_match else None
-        if ranged_value and ranged_value.upper() in ("N/A", "NA"):
-            ranged_value = None
+        stability = card.get("data-stability", "Неизвестно")
 
-        stability_match = stability_re.search(card_text)
-        stability = stability_match.group(1).strip() if stability_match else "Неизвестно"
-
-        origin_match = origin_re.search(card_text)
-        origin = origin_match.group(1).strip() if origin_match else ""
-
-        if src.startswith("http"):
+        img_tag = card.find("img", class_="itemimage")
+        image_url = ""
+        if img_tag and img_tag.get("src"):
+            src = img_tag["src"]
+            if src.startswith(".."):
+                src = src.replace("..", BASE_URL)
+            elif src.startswith("/"):
+                src = BASE_URL + src
             image_url = src
-        elif src.startswith(".."):
-            image_url = src.replace("..", BASE_URL)
-        elif src.startswith("/"):
-            image_url = BASE_URL + src
-        else:
-            image_url = f"{BASE_URL}/{src}"
 
-        items.append(Item(
-            name=display_name,
-            category_slug=slug,
-            rarity=rarity_label,
-            value=value_int,
-            value_display=value_display,
-            ranged_value=ranged_value,
-            stability=stability,
-            image_url=image_url,
-            origin=origin,
-        ))
+        origin = card.get("data-event", "")
+
+        # --- ДЕБАГ: Логируем каждый найденный предмет ---
+        logger.info(f"DEBUG [{slug}]: Найдено -> Имя: '{display_name}', Value: '{value_display}'")
+        # ------------------------------------------------
+
+        items.append(
+            Item(
+                name=display_name,
+                category_slug=slug,
+                rarity=rarity_label,
+                value=value_int,
+                value_display=value_display,
+                ranged_value=None,
+                stability=stability,
+                image_url=image_url,
+                origin=origin,
+            )
+        )
+
     return items
 
 def fetch_all_items() -> list[Item]:
@@ -1138,14 +1022,6 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
             "(или уже идёт перезапуск). Ничего не делаем — polling сам "
             "переподключится, либо это сделает внешний retry-цикл в main()."
         )
-        # ВАЖНО: раньше здесь вызывался app.stop()/app.start()/start_polling()
-        # прямо из error-хендлера. Если Application к этому моменту уже не
-        # запущен (например, конфликт пришёл во время остановки), app.stop()
-        # бросает RuntimeError("This Application is not running!"), и это
-        # исключение вылетает уже из самого обработчика ошибок, ломая цикл
-        # ещё раз. PTB и так автоматически переподключает polling после
-        # Conflict, а окончательное восстановление после серии конфликтов
-        # обеспечивает retry-цикл вокруг run_polling() в main().
     elif isinstance(error, NetworkError):
         logger.error("Сетевая ошибка: %s", error)
     elif isinstance(error, TimedOut):
@@ -1174,12 +1050,7 @@ def reset_webhook_and_cleanup():
 # --------------------------------------------------------------------------- #
 
 class _HealthCheckHandler(BaseHTTPRequestHandler):
-    """Простейший обработчик: на любой GET-запрос отвечает 200 OK.
-    Нужен только для того, чтобы Render видел открытый порт и считал
-    сервис живым — сам бот работает через Telegram long polling и с этим
-    HTTP-сервером никак не связан."""
-
-    def do_GET(self) -> None:  # noqa: N802 (имя метода задано BaseHTTPRequestHandler)
+    def do_GET(self) -> None:  # noqa: N802
         body = b"OK"
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -1188,8 +1059,6 @@ class _HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002
-        # Отключаем стандартный вывод BaseHTTPRequestHandler в stderr на
-        # каждый запрос, чтобы не засорять логи запросами health-check.
         pass
 
 def start_health_check_server(port: int) -> ThreadingHTTPServer:
