@@ -1,18 +1,22 @@
 """
-MM2 Values Telegram Bot
-========================
+MM2 Values Telegram Bot (v2.0)
+===============================
 Ищет ценность скинов/оружия Murder Mystery 2 (Roblox) по названию на русском
-или английском языке (с опечатками и вариациями), парся supremevalues.com через
-ScrapingAnt API для гарантированного обхода анти-бот защиты (Incapsula/Imperva).
+или английском (с опечатками и вариациями), парсит supremevalues.com через
+ScrapingAnt API. Отправляет стилизованное изображение с предметом, названием
+и ценой.
 
-Деплой: Render (Background Worker / Web Service с polling) / Termux.
-Файлы: main.py, requirements.txt — больше ничего не требуется.
+Улучшения:
+- Расширенный fuzzy-поиск с русскими переводами (устойчив к опечаткам).
+- Повторные попытки парсинга с экспоненциальной задержкой (до 5 попыток).
+- Генерация красивого изображения с помощью Pillow (шрифт DejaVu Sans).
 """
 
 from __future__ import annotations
 
 import asyncio
 import html
+import io
 import logging
 import os
 import re
@@ -27,6 +31,7 @@ import requests
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz, process
 from apscheduler.schedulers.background import BackgroundScheduler
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from telegram import (
     InlineKeyboardButton,
@@ -55,15 +60,11 @@ if not BOT_TOKEN:
     )
 
 SCRAPINGANT_API_KEY = os.environ.get("SCRAPINGANT_API_KEY", "2e2075e51d5e4236a474c52c2434d15a")
-
-# Как часто обновлять кэш ценностей (в секундах). По умолчанию — раз в час.
 REFRESH_INTERVAL_SECONDS = int(os.environ.get("REFRESH_INTERVAL_SECONDS", "3600"))
-
 DB_PATH = os.environ.get("DB_PATH", "mm2bot_settings.db")
 
 BASE_URL = "https://supremevalues.com"
 
-# Все категории сайта supremevalues.com для Murder Mystery 2.
 CATEGORIES: list[tuple[str, str]] = [
     ("godlies", "Godly"),
     ("chromas", "Chroma"),
@@ -82,6 +83,8 @@ CATEGORIES: list[tuple[str, str]] = [
 ]
 
 REQUEST_TIMEOUT = 45
+MAX_RETRIES = 5                # больше попыток
+RETRY_BASE_DELAY = 3           # начальная задержка в секундах
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -91,20 +94,19 @@ logger = logging.getLogger("mm2bot")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
-
 # --------------------------------------------------------------------------- #
 # Модель данных предмета
 # --------------------------------------------------------------------------- #
 
 @dataclass
 class Item:
-    name: str                      # английское отображаемое имя, как на сайте
-    category_slug: str             # godlies / chromas / ...
-    rarity: str                    # Godly / Chroma / ...
-    value: Optional[int]           # числовое значение (для сортировки/поиска)
-    value_display: str             # как показывать ("15,000" или "N/A")
-    ranged_value: Optional[str]    # диапазон, если есть, иначе None
-    stability: str                 # Stable / Fluctuating / Doing Well / ...
+    name: str
+    category_slug: str
+    rarity: str
+    value: Optional[int]
+    value_display: str
+    ranged_value: Optional[str]
+    stability: str
     image_url: str
     origin: str = ""
 
@@ -112,9 +114,8 @@ class Item:
     def search_key(self) -> str:
         return normalize_text(self.name)
 
-
 # --------------------------------------------------------------------------- #
-# Нормализация текста / транслитерация (для fuzzy-поиска RU+EN, опечаток)
+# Нормализация и перевод
 # --------------------------------------------------------------------------- #
 
 CYR_TO_LAT = {
@@ -134,54 +135,41 @@ EN_LAYOUT_TO_RU = str.maketrans(
     "йцукенгшщзхъфывапролджэячсмитьбю.ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,",
 )
 
-
 def strip_accents(text: str) -> str:
     return "".join(
         c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)
     )
-
 
 def normalize_text(text: str) -> str:
     text = strip_accents(text.lower())
     text = re.sub(r"[^a-zа-я0-9]+", "", text)
     return text
 
-
 def transliterate_ru_to_lat(text: str) -> str:
     text = text.lower()
     return "".join(CYR_TO_LAT.get(ch, ch) for ch in text)
 
-
 def generate_query_variants(raw_query: str) -> list[str]:
     raw = raw_query.strip()
     variants = set()
-
     base = normalize_text(raw)
     if base:
         variants.add(base)
-
     swapped_to_en = raw.translate(RU_LAYOUT_TO_EN)
     v = normalize_text(swapped_to_en)
     if v:
         variants.add(v)
-
     swapped_to_ru = raw.translate(EN_LAYOUT_TO_RU)
     v = normalize_text(swapped_to_ru)
     if v:
         variants.add(v)
-
     translit = transliterate_ru_to_lat(raw)
     v = normalize_text(translit)
     if v:
         variants.add(v)
-
     return list(variants)
 
-
-# --------------------------------------------------------------------------- #
-# Русские названия предметов
-# --------------------------------------------------------------------------- #
-
+# Расширенный словарь русских названий (полный, как в исходном коде)
 RU_NAMES: dict[str, str] = {
     "nebula": "Туманность",
     "traveler's gun": "Пистолет путешественника",
@@ -380,7 +368,6 @@ WORD_TRANSLATIONS: dict[str, str] = {
     "valentine": "Валентин", "easter": "Пасха", "seer": "Провидец",
 }
 
-
 def auto_translate_ru(name_en: str) -> str:
     words = name_en.split()
     result = []
@@ -389,13 +376,11 @@ def auto_translate_ru(name_en: str) -> str:
         result.append(WORD_TRANSLATIONS.get(key, w))
     return " ".join(result)
 
-
 def get_ru_name(name_en: str) -> str:
     key = name_en.lower().strip()
     if key in RU_NAMES:
         return RU_NAMES[key]
     return auto_translate_ru(name_en)
-
 
 # --------------------------------------------------------------------------- #
 # Парсинг supremevalues.com через ScrapingAnt API
@@ -412,7 +397,6 @@ STABILITY_MAP_RU = {
     "dropping": "Падает в цене",
 }
 
-
 def _parse_value_to_int(raw: str) -> Optional[int]:
     raw = raw.strip()
     if not raw or raw.upper() in ("N/A", "NA"):
@@ -422,62 +406,56 @@ def _parse_value_to_int(raw: str) -> Optional[int]:
     except ValueError:
         return None
 
-
 def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> list[Item]:
-    """Скачивает и парсит одну категорию с supremevalues.com через ScrapingAnt."""
+    """Скачивает и парсит одну категорию с повторными попытками и экспоненциальной задержкой."""
     target_url = f"{BASE_URL}/mm2/{slug}"
     api_url = f"https://api.scrapingant.com/v2/general?url={target_url}&x-api-key={SCRAPINGANT_API_KEY}&browser=true"
 
-    max_retries = 3
-    resp = None
-    for attempt in range(max_retries):
-        resp = session.get(api_url, timeout=REQUEST_TIMEOUT)
-        if resp.status_code == 200:
-            break
-        elif resp.status_code == 409:
-            logger.warning("ScrapingAnt 409 для '%s', ожидание 3 сек (попытка %d/%d)", slug, attempt + 1, max_retries)
-            time.sleep(3)
-        else:
-            raise RuntimeError(f"ScrapingAnt API вернул статус {resp.status_code}")
-
-    if not resp or resp.status_code != 200:
-        raise RuntimeError(f"ScrapingAnt API превысил лимит попыток (статус {resp.status_code if resp else 'None'})")
+    last_response = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = session.get(api_url, timeout=REQUEST_TIMEOUT)
+            if resp.status_code == 200:
+                break
+            elif resp.status_code == 409:
+                logger.warning(
+                    "ScrapingAnt 409 для '%s', попытка %d/%d", slug, attempt, MAX_RETRIES
+                )
+            else:
+                logger.error("ScrapingAnt вернул %d для '%s'", resp.status_code, slug)
+            last_response = resp
+        except requests.RequestException as e:
+            logger.warning("Ошибка запроса для '%s': %s", slug, e)
+        if attempt < MAX_RETRIES:
+            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            time.sleep(delay)
+    else:
+        status = last_response.status_code if last_response else "нет ответа"
+        raise RuntimeError(f"Не удалось загрузить категорию '{slug}' после {MAX_RETRIES} попыток (статус {status})")
 
     soup = BeautifulSoup(resp.text, "html.parser")
-
     items: list[Item] = []
     seen_names: set[str] = set()
 
-    cards = soup.find_all("div", class_="itemcolumn")
-
-    for card in cards:
+    for card in soup.find_all("div", class_="itemcolumn"):
         head_tag = card.find("div", class_="itemhead")
         btn_tag = card.find("button")
-        
         display_name = ""
         if btn_tag and btn_tag.get("data-name"):
             display_name = btn_tag.get("data-name").strip()
         elif head_tag:
             display_name = head_tag.get_text(strip=True)
-
         if not display_name:
             continue
-
         if display_name.lower() in seen_names:
             continue
         seen_names.add(display_name.lower())
 
         val_tag = card.find("b", class_="itemvalue")
-        if val_tag:
-            value_raw = val_tag.get_text(strip=True)
-        else:
-            value_raw = card.get("data-value", "N/A")
-
+        value_raw = val_tag.get_text(strip=True) if val_tag else card.get("data-value", "N/A")
         value_int = _parse_value_to_int(value_raw)
         value_display = value_raw if value_int is None else f"{value_int:,}".replace(",", " ")
-
         stability = card.get("data-stability", "Неизвестно")
-
         img_tag = card.find("img", class_="itemimage")
         image_url = ""
         if img_tag and img_tag.get("src"):
@@ -487,25 +465,19 @@ def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> l
             elif src.startswith("/"):
                 src = BASE_URL + src
             image_url = src
-
         origin = card.get("data-event", "")
-
-        items.append(
-            Item(
-                name=display_name,
-                category_slug=slug,
-                rarity=rarity_label,
-                value=value_int,
-                value_display=value_display,
-                ranged_value=None,
-                stability=stability,
-                image_url=image_url,
-                origin=origin,
-            )
-        )
-
+        items.append(Item(
+            name=display_name,
+            category_slug=slug,
+            rarity=rarity_label,
+            value=value_int,
+            value_display=value_display,
+            ranged_value=None,
+            stability=stability,
+            image_url=image_url,
+            origin=origin,
+        ))
     return items
-
 
 def fetch_all_items() -> list[Item]:
     all_items: list[Item] = []
@@ -515,11 +487,10 @@ def fetch_all_items() -> list[Item]:
                 cat_items = fetch_category(session, slug, rarity_label)
                 logger.info("Категория '%s': найдено %d предметов", slug, len(cat_items))
                 all_items.extend(cat_items)
-                time.sleep(1.5)  # Пауза между запросами для предотвращения 409 ошибок
+                time.sleep(2.0)   # увеличенная пауза между категориями
             except Exception:
                 logger.exception("Не удалось спарсить категорию '%s'", slug)
     return all_items
-
 
 # --------------------------------------------------------------------------- #
 # Кэш данных (потокобезопасный, обновляется по расписанию)
@@ -533,6 +504,21 @@ class ValuesCache:
         self.last_updated: float = 0.0
         self.last_error: Optional[str] = None
 
+    def _build_search_index(self, items: list[Item]) -> list[tuple[str, int]]:
+        index = []
+        for idx, item in enumerate(items):
+            # английский ключ
+            en_key = item.search_key
+            if en_key:
+                index.append((en_key, idx))
+            # русский ключ
+            ru_name = get_ru_name(item.name)
+            ru_key = normalize_text(ru_name)
+            if ru_key and ru_key != en_key:
+                index.append((ru_key, idx))
+            # можно добавить дополнительные варианты, но и этого достаточно
+        return index
+
     def refresh(self) -> None:
         logger.info("Запуск обновления кэша ценностей...")
         try:
@@ -541,9 +527,7 @@ class ValuesCache:
                 raise RuntimeError("Парсинг вернул 0 предметов — проверьте API ключ или структуру сайта.")
             with self._lock:
                 self._items = items
-                self._search_index = [
-                    (it.search_key, idx) for idx, it in enumerate(items) if it.search_key
-                ]
+                self._search_index = self._build_search_index(items)
                 self.last_updated = time.time()
                 self.last_error = None
             logger.info("Кэш обновлён: всего %d предметов.", len(items))
@@ -556,7 +540,6 @@ class ValuesCache:
         with self._lock:
             items = self._items
             index = list(self._search_index)
-
         if not items or not index:
             return []
 
@@ -564,19 +547,17 @@ class ValuesCache:
         if not variants:
             return []
 
+        # собираем все ключи из индекса
         choices = [key for key, _ in index]
         best_by_idx: dict[int, float] = {}
 
         for variant in variants:
+            # прямое совпадение имеет приоритет
             for key, idx in index:
                 if key == variant:
                     best_by_idx[idx] = 100.0
-
             results = process.extract(
-                variant,
-                choices,
-                scorer=fuzz.WRatio,
-                limit=limit * 3,
+                variant, choices, scorer=fuzz.WRatio, limit=limit * 3
             )
             for matched_key, score, pos in results:
                 idx = index[pos][1]
@@ -587,7 +568,6 @@ class ValuesCache:
             return []
 
         ranked = sorted(best_by_idx.items(), key=lambda kv: kv[1], reverse=True)
-
         THRESHOLD = 62.0
         result: list[tuple[Item, float]] = []
         for idx, score in ranked:
@@ -596,7 +576,6 @@ class ValuesCache:
             result.append((items[idx], score))
             if len(result) >= limit:
                 break
-
         return result
 
     @property
@@ -604,9 +583,7 @@ class ValuesCache:
         with self._lock:
             return len(self._items)
 
-
 cache = ValuesCache()
-
 
 # --------------------------------------------------------------------------- #
 # Настройки пользователей (язык интерфейса) — SQLite
@@ -614,46 +591,31 @@ cache = ValuesCache()
 
 DEFAULT_LANG = "ru"
 SUPPORTED_LANGS = {"ru": "Русский", "en": "English"}
-
 _db_lock = threading.Lock()
-
 
 def init_db() -> None:
     with _db_lock, sqlite3.connect(DB_PATH) as conn:
         conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_settings (
-                user_id INTEGER PRIMARY KEY,
-                lang TEXT NOT NULL DEFAULT 'ru'
-            )
-            """
+            "CREATE TABLE IF NOT EXISTS user_settings (user_id INTEGER PRIMARY KEY, lang TEXT NOT NULL DEFAULT 'ru')"
         )
         conn.commit()
-
 
 def get_user_lang(user_id: int) -> str:
     with _db_lock, sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute("SELECT lang FROM user_settings WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
-        if row:
-            return row[0]
-        return DEFAULT_LANG
-
+        return row[0] if row else DEFAULT_LANG
 
 def set_user_lang(user_id: int, lang: str) -> None:
     with _db_lock, sqlite3.connect(DB_PATH) as conn:
         conn.execute(
-            """
-            INSERT INTO user_settings (user_id, lang) VALUES (?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET lang = excluded.lang
-            """,
+            "INSERT INTO user_settings (user_id, lang) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET lang = excluded.lang",
             (user_id, lang),
         )
         conn.commit()
 
-
 # --------------------------------------------------------------------------- #
-# Локализация текстов интерфейса
+# Локализация
 # --------------------------------------------------------------------------- #
 
 TEXTS = {
@@ -682,9 +644,7 @@ TEXTS = {
         "status_label": "Категория",
         "stability_label": "Стабильность",
         "unknown_stability": "Неизвестно",
-        "cache_empty": (
-            "⏳ База данных ещё загружается, попробуй через минуту."
-        ),
+        "cache_empty": "⏳ База данных ещё загружается, попробуй через минуту.",
         "status_report": (
             "📊 Предметов в базе: {count}\n"
             "🕒 Последнее обновление: {last_update}\n"
@@ -737,12 +697,10 @@ TEXTS = {
     },
 }
 
-
 def t(lang: str, key: str, **kwargs) -> str:
     lang = lang if lang in TEXTS else DEFAULT_LANG
     template = TEXTS[lang].get(key, TEXTS[DEFAULT_LANG][key])
     return template.format(**kwargs) if kwargs else template
-
 
 def localized_stability(lang: str, stability_en: str) -> str:
     if lang == "en":
@@ -750,37 +708,116 @@ def localized_stability(lang: str, stability_en: str) -> str:
     key = stability_en.strip().lower()
     return STABILITY_MAP_RU.get(key, stability_en)
 
-
 # --------------------------------------------------------------------------- #
-# Форматирование ответа
+# Генерация изображения предмета
 # --------------------------------------------------------------------------- #
 
-def format_item_caption(item: Item, lang: str) -> str:
-    name_en = html.escape(item.name)
+# Попытка загрузить системный шрифт DejaVu Sans (обычно есть на Ubuntu)
+FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONT_PATH_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
-    if lang == "ru":
-        name_ru = html.escape(get_ru_name(item.name))
-        title_line = f"<b>{name_en}</b> ({name_ru})"
+def get_font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
+    path = FONT_PATH if bold else FONT_PATH_REGULAR
+    try:
+        return ImageFont.truetype(path, size)
+    except OSError:
+        # fallback на стандартный шрифт Pillow
+        return ImageFont.load_default()
+
+def download_image(url: str) -> Optional[Image.Image]:
+    if not url:
+        return None
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            return Image.open(io.BytesIO(resp.content)).convert("RGBA")
+    except Exception as e:
+        logger.warning("Не удалось скачать изображение %s: %s", url, e)
+    return None
+
+def create_item_image(item: Item, lang: str) -> io.BytesIO:
+    """Создаёт стилизованное изображение с предметом, названием и ценой."""
+    width, height = 800, 600
+    # тёмный градиентный фон (два цвета)
+    bg_color1 = (26, 26, 46)   # #1a1a2e
+    bg_color2 = (22, 33, 62)   # #16213e
+    img = Image.new("RGBA", (width, height), bg_color1)
+    draw = ImageDraw.Draw(img)
+
+    # градиент
+    for y in range(height):
+        r = int(bg_color1[0] + (bg_color2[0] - bg_color1[0]) * y / height)
+        g = int(bg_color1[1] + (bg_color2[1] - bg_color1[1]) * y / height)
+        b = int(bg_color1[2] + (bg_color2[2] - bg_color1[2]) * y / height)
+        draw.line([(0, y), (width, y)], fill=(r, g, b))
+
+    # полупрозрачная подложка для текста
+    overlay = Image.new("RGBA", (width, height), (255, 255, 255, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    overlay_draw.rectangle([(20, 400), (width - 20, 580)], fill=(0, 0, 0, 160))
+    img = Image.alpha_composite(img, overlay)
+
+    # загружаем изображение предмета
+    item_img = None
+    if item.image_url:
+        item_img = download_image(item.image_url)
+    if item_img:
+        # ресайзим с сохранением пропорций, максимальный размер 280x280
+        max_size = 280
+        ratio = min(max_size / item_img.width, max_size / item_img.height, 1.0)
+        new_w = int(item_img.width * ratio)
+        new_h = int(item_img.height * ratio)
+        item_img = item_img.resize((new_w, new_h), Image.LANCZOS)
     else:
-        title_line = f"<b>{name_en}</b>"
+        # заглушка: вопросительный знак
+        item_img = Image.new("RGBA", (200, 200), (255, 255, 255, 0))
+        draw_stub = ImageDraw.Draw(item_img)
+        draw_stub.text((60, 50), "?", fill=(200, 200, 200), font=get_font(100))
 
-    value_line = item.value_display
-    if item.ranged_value:
-        value_line = f"{item.value_display}  [{item.ranged_value}]"
+    # размещаем предмет по центру верхней части
+    item_x = (width - item_img.width) // 2
+    item_y = 150 - item_img.height // 2
+    img.paste(item_img, (item_x, item_y), item_img)
 
-    stability_text = localized_stability(lang, item.stability)
+    # Тексты
+    title_font = get_font(38, bold=True)
+    subtitle_font = get_font(24, bold=False)
+    value_font = get_font(36, bold=True)
+    detail_font = get_font(22, bold=False)
 
-    lines = [
-        title_line,
-        "",
-        f"<i>{t(lang, 'value_label')}:</i>",
-        f"Supreme: <b>{value_line}</b>",
-        "",
-        f"{t(lang, 'status_label')}: <b>{html.escape(item.rarity)}</b>",
-        f"{t(lang, 'stability_label')}: <b>{html.escape(stability_text)}</b>",
-    ]
-    return "\n".join(lines)
+    name_en = item.name
+    name_ru = get_ru_name(item.name) if lang == "ru" else ""
+    if name_ru and name_ru != name_en:
+        title = f"{name_en} / {name_ru}"
+    else:
+        title = name_en
 
+    value_str = item.value_display
+    rarity = item.rarity
+    stability = localized_stability(lang, item.stability)
+
+    # Цвет текста
+    fill_white = (255, 255, 255, 255)
+    fill_light = (220, 220, 220, 255)
+    fill_yellow = (255, 215, 0, 255)
+
+    # Тень для заголовка
+    draw.text((width//2 + 2, 22), title, anchor="ma", font=title_font, fill=(0,0,0,120))
+    draw.text((width//2, 20), title, anchor="ma", font=title_font, fill=fill_white)
+
+    # Стоимость
+    draw.text((width//2 + 2, 432), f"Supreme: {value_str}", anchor="ma", font=value_font, fill=(0,0,0,120))
+    draw.text((width//2, 430), f"Supreme: {value_str}", anchor="ma", font=value_font, fill=fill_yellow)
+
+    # Категория и стабильность
+    draw.text((width//2 + 1, 491), f"{rarity}  ·  {stability}", anchor="ma", font=detail_font, fill=(0,0,0,100))
+    draw.text((width//2, 490), f"{rarity}  ·  {stability}", anchor="ma", font=detail_font, fill=fill_light)
+
+    # Сохраняем в BytesIO
+    bio = io.BytesIO()
+    img.save(bio, format="PNG")
+    bio.seek(0)
+    return bio
 
 # --------------------------------------------------------------------------- #
 # Обработчики команд Telegram
@@ -790,11 +827,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = get_user_lang(update.effective_user.id)
     await update.message.reply_text(t(lang, "start"), parse_mode=ParseMode.HTML)
 
-
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = get_user_lang(update.effective_user.id)
     await update.message.reply_text(t(lang, "help"))
-
 
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = get_user_lang(update.effective_user.id)
@@ -805,7 +840,6 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(
         t(lang, "settings_title"), reply_markup=InlineKeyboardMarkup(buttons)
     )
-
 
 async def on_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -818,7 +852,6 @@ async def on_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         t(lang_code, "settings_saved", lang=SUPPORTED_LANGS[lang_code])
     )
 
-
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = get_user_lang(update.effective_user.id)
     count = cache.size
@@ -828,17 +861,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         else t(lang, "never")
     )
     if cache.last_error:
-        text = t(
-            lang,
-            "status_report",
-            count=count,
-            last_update=last_update,
-            error=cache.last_error,
-        )
+        text = t(lang, "status_report", count=count, last_update=last_update, error=cache.last_error)
     else:
         text = t(lang, "status_report_ok", count=count, last_update=last_update)
     await update.message.reply_text(text)
-
 
 async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
@@ -856,31 +882,47 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     results = cache.search(query_text, limit=1)
-
     if not results:
         await update.message.reply_text(t(lang, "not_found", query=query_text))
         return
 
     item, score = results[0]
-    caption = format_item_caption(item, lang)
 
+    # Генерируем красивое изображение
     try:
-        if item.image_url:
-            await update.message.reply_photo(
-                photo=item.image_url,
-                caption=caption,
-                parse_mode=ParseMode.HTML,
-            )
-        else:
-            await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
-    except Exception:
-        logger.exception("Не удалось отправить фото, отправляю текстом")
+        img_bio = create_item_image(item, lang)
+        await update.message.reply_photo(
+            photo=img_bio,
+            caption=f"🔍 Запрос: {html.escape(query_text)}",
+        )
+    except Exception as e:
+        logger.exception("Ошибка при создании изображения: %s", e)
+        # fallback: текстовый ответ
+        caption = format_item_caption(item, lang)
         await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
 
+# Старая функция форматирования (на случай ошибки)
+def format_item_caption(item: Item, lang: str) -> str:
+    name_en = html.escape(item.name)
+    if lang == "ru":
+        name_ru = html.escape(get_ru_name(item.name))
+        title_line = f"<b>{name_en}</b> ({name_ru})"
+    else:
+        title_line = f"<b>{name_en}</b>"
+    stability_text = localized_stability(lang, item.stability)
+    lines = [
+        title_line,
+        "",
+        f"<i>{t(lang, 'value_label')}:</i>",
+        f"Supreme: <b>{item.value_display}</b>",
+        "",
+        f"{t(lang, 'status_label')}: <b>{html.escape(item.rarity)}</b>",
+        f"{t(lang, 'stability_label')}: <b>{html.escape(stability_text)}</b>",
+    ]
+    return "\n".join(lines)
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Ошибка при обработке апдейта: %s", context.error, exc_info=context.error)
-
 
 # --------------------------------------------------------------------------- #
 # Точка входа
@@ -889,15 +931,13 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 def main() -> None:
     init_db()
 
-    # Фикс для Python 3.14 (создание event loop в главном потоке)
     try:
         loop = asyncio.get_event_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-    # Запускаем первичное обновление кэша в ФОНОВОМ ПОТОКЕ,
-    # чтобы бот стартовал мгновенно и Render не перезапускал его по таймауту
+    # Первичная загрузка кэша в фоне, чтобы бот стартовал мгновенно
     threading.Thread(target=cache.refresh, daemon=True).start()
 
     scheduler = BackgroundScheduler(timezone="UTC")
@@ -923,7 +963,6 @@ def main() -> None:
 
     logger.info("Бот запущен, начинаю polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-
 
 if __name__ == "__main__":
     main()
