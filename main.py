@@ -5,22 +5,19 @@ MM2 Values Telegram Bot
 или английском языке (с опечатками и вариациями), парся supremevalues.com.
 
 Источник данных: только supremevalues.com.
-mm2values.com защищён JS-проверкой (Cloudflare-подобный challenge) и не
-отдаёт HTML обычным HTTP-запросом, поэтому не используется — это осознанное
-решение, принятое заранее (headless-браузер на бесплатном Render слишком
-медленный и нестабильный для задачи "поиск в один клик").
-
-Деплой: Render (Background Worker / Web Service с polling).
-Файлы: main.py, requirements.txt — больше ничего не требуется.
+Деплой: Render (Web Service на бесплатном тарифе).
+Файлы: main.py, requirements.txt.
 """
 
 from __future__ import annotations
 
 import asyncio
 import html
+import http.server
 import logging
 import os
 import re
+import socketserver
 import sqlite3
 import threading
 import time
@@ -442,7 +439,6 @@ def _parse_value_to_int(raw: str) -> Optional[int]:
 
 
 def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> list[Item]:
-    """Универсальный парсинг категории с supremevalues.com."""
     url = f"{BASE_URL}/mm2/{slug}"
     resp = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
@@ -451,7 +447,6 @@ def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> l
     items: list[Item] = []
     seen_names: set[str] = set()
 
-    # Поиск по стандарту supremevalues (блоки .item-box) или фоллбэк по картинкам
     item_blocks = soup.select(".item-box, .card, div[class*='item']")
     if not item_blocks:
         img_pattern = re.compile(rf"/media/mm2", re.IGNORECASE)
@@ -461,7 +456,6 @@ def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> l
     for block in item_blocks:
         text_block = block.get_text(" ", strip=True)
         if "Value" not in text_block:
-            # Пробуем подняться на пару уровней вверх
             node = block
             for _ in range(3):
                 if node.parent:
@@ -475,7 +469,6 @@ def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> l
         if not value_match:
             continue
 
-        # Извлекаем имя
         name_part = ""
         name_elem = block.select_one(".item-name, h3, h4, .title, b")
         if name_elem:
@@ -870,7 +863,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Точка входа
+# Точка входа и Сервер-заглушка
 # --------------------------------------------------------------------------- #
 
 def main() -> None:
@@ -902,8 +895,25 @@ def main() -> None:
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
+def run_dummy_server():
+    """Запускает простейший HTTP-сервер, чтобы Render Free Tier видел открытый порт."""
+    port = int(os.environ.get("PORT", 10000))
+    handler = http.server.SimpleHTTPRequestHandler
+    
+    # Отключаем логирование HTTP-запросов (ping-запросов от Render), 
+    # чтобы они не спамили в консоль
+    handler.log_message = lambda *args: None
+    
+    with socketserver.TCPServer(("", port), handler) as httpd:
+        logger.info(f"Dummy HTTP сервер запущен на порту {port}")
+        httpd.serve_forever()
+
+
 if __name__ == "__main__":
-    # Явное создание asyncio event loop для предотвращения "no current event loop"
+    # 1. Запускаем фейковый веб-сервер в фоновом потоке для Render
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+
+    # 2. Явно создаем asyncio event loop для библиотеки telegram
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
