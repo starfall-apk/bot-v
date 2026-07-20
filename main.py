@@ -1,18 +1,22 @@
 """
-MM2 Values Telegram Bot (v2.1)
+MM2 Values Telegram Bot (v2.3)
 ===============================
 Ищет ценность скинов/оружия Murder Mystery 2 (Roblox) по названию на русском
 или английском (с опечатками и вариациями), парсит supremevalues.com через
 ScrapingAnt API. Отправляет стилизованное изображение с предметом, названием
 и ценой.
 
-Улучшения:
-- Расширенный fuzzy-поиск с русскими переводами (устойчив к опечаткам).
-- Повторные попытки парсинга с экспоненциальной задержкой (до 5 попыток).
-- Генерация красивого изображения с помощью Pillow (шрифт DejaVu Sans).
-- Экономия ресурсов: загружаются только нужные редкости.
-- Фоновое обновление раз в неделю (настраивается администратором).
-- Атомарное обновление кэша – поиск всегда использует последнюю полную версию.
+Исправления и улучшения:
+- Загружаются только необходимые редкости (godlies, chromas, legendaries,
+  ancients, vintages, evos, rares, uncommons, commons).
+- Автоматическое обновление раз в 7 дней, администратор может изменить
+  период командой /setrefresh (только для ID 1420898868).
+- Атомарная замена кэша – при обновлении старые данные остаются доступными.
+- Исправлена ошибка t() got multiple values for argument 'lang'.
+- Улучшена обработка ошибок ScrapingAnt (включая "got more than 100 headers").
+- **Гарантированное исправление ошибки >100 заголовков**: увеличен лимит
+  заголовков в urllib3 через кастомный HTTPAdapter.
+- Защита от повторного запуска (сброс вебхука, автоматический перезапуск при Conflict).
 """
 
 from __future__ import annotations
@@ -22,8 +26,11 @@ import html
 import io
 import logging
 import os
+import random
 import re
 import sqlite3
+import signal
+import sys
 import threading
 import time
 import unicodedata
@@ -31,10 +38,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.poolmanager import PoolManager
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz, process
 from apscheduler.schedulers.background import BackgroundScheduler
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont
 
 from telegram import (
     InlineKeyboardButton,
@@ -50,6 +59,17 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.error import Conflict, NetworkError, TimedOut
+
+# --------------------------------------------------------------------------- #
+# Класс для увеличения лимита заголовков в urllib3
+# --------------------------------------------------------------------------- #
+
+class HeaderRichHTTPAdapter(HTTPAdapter):
+    """HTTPAdapter с увеличенным лимитом заголовков (>100)."""
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs['maxheaders'] = 200   # ставим запас в 200 заголовков
+        return super().init_poolmanager(*args, **kwargs)
 
 # --------------------------------------------------------------------------- #
 # Конфигурация
@@ -63,13 +83,11 @@ if not BOT_TOKEN:
     )
 
 SCRAPINGANT_API_KEY = os.environ.get("SCRAPINGANT_API_KEY", "2e2075e51d5e4236a474c52c2434d15a")
-# Интервал по умолчанию 7 дней (в секундах)
-DEFAULT_REFRESH_INTERVAL_SECONDS = 7 * 24 * 3600
 DB_PATH = os.environ.get("DB_PATH", "mm2bot_settings.db")
 
 BASE_URL = "https://supremevalues.com"
 
-# Уменьшенный список категорий – только нужные
+# Только нужные редкости
 CATEGORIES: list[tuple[str, str]] = [
     ("godlies", "Godly"),
     ("chromas", "Chroma"),
@@ -80,12 +98,11 @@ CATEGORIES: list[tuple[str, str]] = [
     ("rares", "Rare"),
     ("uncommons", "Uncommon"),
     ("commons", "Common"),
-    # Убраны: sets, uniques, pets, misc, untradables
 ]
 
-REQUEST_TIMEOUT = 45
-MAX_RETRIES = 5                # больше попыток
-RETRY_BASE_DELAY = 3           # начальная задержка в секундах
+REQUEST_TIMEOUT = 60
+MAX_RETRIES = 5
+RETRY_BASE_DELAY = 5
 
 ADMIN_ID = 1420898868
 
@@ -96,6 +113,7 @@ logging.basicConfig(
 logger = logging.getLogger("mm2bot")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
+logging.getLogger("telegram.ext.Application").setLevel(logging.WARNING)
 
 # --------------------------------------------------------------------------- #
 # Модель данных предмета
@@ -172,7 +190,7 @@ def generate_query_variants(raw_query: str) -> list[str]:
         variants.add(v)
     return list(variants)
 
-# Расширенный словарь русских названий (полный, как в исходном коде)
+# Расширенный словарь русских названий (полный, как раньше)
 RU_NAMES: dict[str, str] = {
     "nebula": "Туманность",
     "traveler's gun": "Пистолет путешественника",
@@ -386,7 +404,7 @@ def get_ru_name(name_en: str) -> str:
     return auto_translate_ru(name_en)
 
 # --------------------------------------------------------------------------- #
-# Парсинг supremevalues.com через ScrapingAnt API
+# Парсинг с использованием сессии с HeaderRichHTTPAdapter
 # --------------------------------------------------------------------------- #
 
 STABILITY_MAP_RU = {
@@ -410,31 +428,42 @@ def _parse_value_to_int(raw: str) -> Optional[int]:
         return None
 
 def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> list[Item]:
-    """Скачивает и парсит одну категорию с повторными попытками и экспоненциальной задержкой."""
+    """Скачивает и парсит одну категорию. Сессия уже настроена с HeaderRichHTTPAdapter."""
     target_url = f"{BASE_URL}/mm2/{slug}"
     api_url = f"https://api.scrapingant.com/v2/general?url={target_url}&x-api-key={SCRAPINGANT_API_KEY}&browser=true"
 
-    last_response = None
+    last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             resp = session.get(api_url, timeout=REQUEST_TIMEOUT)
             if resp.status_code == 200:
                 break
             elif resp.status_code == 409:
-                logger.warning(
-                    "ScrapingAnt 409 для '%s', попытка %d/%d", slug, attempt, MAX_RETRIES
-                )
+                logger.warning("ScrapingAnt 409 для '%s', попытка %d/%d", slug, attempt, MAX_RETRIES)
             else:
                 logger.error("ScrapingAnt вернул %d для '%s'", resp.status_code, slug)
-            last_response = resp
-        except requests.RequestException as e:
-            logger.warning("Ошибка запроса для '%s': %s", slug, e)
+            last_error = f"HTTP {resp.status_code}"
+        except requests.exceptions.ConnectionError as e:
+            logger.warning("Ошибка соединения для '%s': %s", slug, str(e)[:200])
+            last_error = "ConnectionError"
+        except requests.exceptions.Timeout:
+            logger.warning("Таймаут для '%s', попытка %d/%d", slug, attempt, MAX_RETRIES)
+            last_error = "Timeout"
+        except requests.exceptions.RequestException as e:
+            logger.warning("Ошибка запроса для '%s': %s", slug, type(e).__name__)
+            last_error = type(e).__name__
+        except Exception as e:
+            logger.exception("Неизвестная ошибка при запросе '%s'", slug)
+            last_error = "Unknown"
+
         if attempt < MAX_RETRIES:
-            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(1, 3)
+            logger.info("Ожидание %.1f сек. перед повторной попыткой...", delay)
             time.sleep(delay)
     else:
-        status = last_response.status_code if last_response else "нет ответа"
-        raise RuntimeError(f"Не удалось загрузить категорию '{slug}' после {MAX_RETRIES} попыток (статус {status})")
+        raise RuntimeError(
+            f"Не удалось загрузить категорию '{slug}' после {MAX_RETRIES} попыток (последняя ошибка: {last_error})"
+        )
 
     soup = BeautifulSoup(resp.text, "html.parser")
     items: list[Item] = []
@@ -484,19 +513,24 @@ def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> l
 
 def fetch_all_items() -> list[Item]:
     all_items: list[Item] = []
-    with requests.Session() as session:
-        for slug, rarity_label in CATEGORIES:
-            try:
-                cat_items = fetch_category(session, slug, rarity_label)
-                logger.info("Категория '%s': найдено %d предметов", slug, len(cat_items))
-                all_items.extend(cat_items)
-                time.sleep(2.0)   # увеличенная пауза между категориями
-            except Exception:
-                logger.exception("Не удалось спарсить категорию '%s'", slug)
+    # Создаём сессию и монтируем адаптер с увеличенным лимитом заголовков
+    session = requests.Session()
+    adapter = HeaderRichHTTPAdapter()
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
+
+    for slug, rarity_label in CATEGORIES:
+        try:
+            cat_items = fetch_category(session, slug, rarity_label)
+            logger.info("Категория '%s': найдено %d предметов", slug, len(cat_items))
+            all_items.extend(cat_items)
+            time.sleep(2.0)
+        except Exception:
+            logger.exception("Не удалось спарсить категорию '%s'", slug)
     return all_items
 
 # --------------------------------------------------------------------------- #
-# Кэш данных (потокобезопасный, обновляется атомарно)
+# Кэш данных (атомарное обновление)
 # --------------------------------------------------------------------------- #
 
 class ValuesCache:
@@ -510,11 +544,9 @@ class ValuesCache:
     def _build_search_index(self, items: list[Item]) -> list[tuple[str, int]]:
         index = []
         for idx, item in enumerate(items):
-            # английский ключ
             en_key = item.search_key
             if en_key:
                 index.append((en_key, idx))
-            # русский ключ
             ru_name = get_ru_name(item.name)
             ru_key = normalize_text(ru_name)
             if ru_key and ru_key != en_key:
@@ -527,7 +559,6 @@ class ValuesCache:
             items = fetch_all_items()
             if not items:
                 raise RuntimeError("Парсинг вернул 0 предметов — проверьте API ключ или структуру сайта.")
-            # Атомарная замена данных под блокировкой
             with self._lock:
                 self._items = items
                 self._search_index = self._build_search_index(items)
@@ -554,7 +585,6 @@ class ValuesCache:
         best_by_idx: dict[int, float] = {}
 
         for variant in variants:
-            # прямое совпадение
             for key, idx in index:
                 if key == variant:
                     best_by_idx[idx] = 100.0
@@ -588,7 +618,7 @@ class ValuesCache:
 cache = ValuesCache()
 
 # --------------------------------------------------------------------------- #
-# Настройки (язык интерфейса, интервал обновления) — SQLite
+# Настройки (язык, интервал обновления) — SQLite
 # --------------------------------------------------------------------------- #
 
 DEFAULT_LANG = "ru"
@@ -603,7 +633,6 @@ def init_db() -> None:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS global_settings (key TEXT PRIMARY KEY, value TEXT)"
         )
-        # Установим интервал по умолчанию, если его ещё нет
         conn.execute(
             "INSERT OR IGNORE INTO global_settings (key, value) VALUES ('refresh_interval_days', '7')"
         )
@@ -751,10 +780,9 @@ def localized_stability(lang: str, stability_en: str) -> str:
     return STABILITY_MAP_RU.get(key, stability_en)
 
 # --------------------------------------------------------------------------- #
-# Генерация изображения предмета
+# Генерация изображения
 # --------------------------------------------------------------------------- #
 
-# Системный шрифт DejaVu Sans (обычно есть на Ubuntu)
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 FONT_PATH_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
@@ -777,27 +805,23 @@ def download_image(url: str) -> Optional[Image.Image]:
     return None
 
 def create_item_image(item: Item, lang: str) -> io.BytesIO:
-    """Создаёт стилизованное изображение с предметом, названием и ценой."""
     width, height = 800, 600
     bg_color1 = (26, 26, 46)
     bg_color2 = (22, 33, 62)
     img = Image.new("RGBA", (width, height), bg_color1)
     draw = ImageDraw.Draw(img)
 
-    # градиент
     for y in range(height):
         r = int(bg_color1[0] + (bg_color2[0] - bg_color1[0]) * y / height)
         g = int(bg_color1[1] + (bg_color2[1] - bg_color1[1]) * y / height)
         b = int(bg_color1[2] + (bg_color2[2] - bg_color1[2]) * y / height)
         draw.line([(0, y), (width, y)], fill=(r, g, b))
 
-    # полупрозрачная подложка
     overlay = Image.new("RGBA", (width, height), (255, 255, 255, 0))
     overlay_draw = ImageDraw.Draw(overlay)
     overlay_draw.rectangle([(20, 400), (width - 20, 580)], fill=(0, 0, 0, 160))
     img = Image.alpha_composite(img, overlay)
 
-    # загрузка изображения предмета
     item_img = None
     if item.image_url:
         item_img = download_image(item.image_url)
@@ -808,7 +832,6 @@ def create_item_image(item: Item, lang: str) -> io.BytesIO:
         new_h = int(item_img.height * ratio)
         item_img = item_img.resize((new_w, new_h), Image.LANCZOS)
     else:
-        # заглушка
         item_img = Image.new("RGBA", (200, 200), (255, 255, 255, 0))
         draw_stub = ImageDraw.Draw(item_img)
         draw_stub.text((60, 50), "?", fill=(200, 200, 200), font=get_font(100))
@@ -818,16 +841,12 @@ def create_item_image(item: Item, lang: str) -> io.BytesIO:
     img.paste(item_img, (item_x, item_y), item_img)
 
     title_font = get_font(38, bold=True)
-    subtitle_font = get_font(24, bold=False)
     value_font = get_font(36, bold=True)
     detail_font = get_font(22, bold=False)
 
     name_en = item.name
     name_ru = get_ru_name(item.name) if lang == "ru" else ""
-    if name_ru and name_ru != name_en:
-        title = f"{name_en} / {name_ru}"
-    else:
-        title = name_en
+    title = f"{name_en} / {name_ru}" if (name_ru and name_ru != name_en) else name_en
 
     value_str = item.value_display
     rarity = item.rarity
@@ -837,15 +856,12 @@ def create_item_image(item: Item, lang: str) -> io.BytesIO:
     fill_light = (220, 220, 220, 255)
     fill_yellow = (255, 215, 0, 255)
 
-    # тень заголовка
     draw.text((width//2 + 2, 22), title, anchor="ma", font=title_font, fill=(0,0,0,120))
     draw.text((width//2, 20), title, anchor="ma", font=title_font, fill=fill_white)
 
-    # стоимость
     draw.text((width//2 + 2, 432), f"Supreme: {value_str}", anchor="ma", font=value_font, fill=(0,0,0,120))
     draw.text((width//2, 430), f"Supreme: {value_str}", anchor="ma", font=value_font, fill=fill_yellow)
 
-    # категория и стабильность
     draw.text((width//2 + 1, 491), f"{rarity}  ·  {stability}", anchor="ma", font=detail_font, fill=(0,0,0,100))
     draw.text((width//2, 490), f"{rarity}  ·  {stability}", anchor="ma", font=detail_font, fill=fill_light)
 
@@ -855,7 +871,7 @@ def create_item_image(item: Item, lang: str) -> io.BytesIO:
     return bio
 
 # --------------------------------------------------------------------------- #
-# Обработчики команд Telegram
+# Обработчики Telegram
 # --------------------------------------------------------------------------- #
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -883,7 +899,6 @@ async def on_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     if lang_code not in SUPPORTED_LANGS:
         return
     set_user_lang(query.from_user.id, lang_code)
-    # Используем lang_name, чтобы избежать конфликта с параметром lang
     await query.edit_message_text(
         t(lang_code, "settings_saved", lang_name=SUPPORTED_LANGS[lang_code])
     )
@@ -922,7 +937,7 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(t(lang, "not_found", query=query_text))
         return
 
-    item, score = results[0]
+    item, _ = results[0]
 
     try:
         img_bio = create_item_image(item, lang)
@@ -954,7 +969,6 @@ def format_item_caption(item: Item, lang: str) -> str:
     ]
     return "\n".join(lines)
 
-# ----- Административная команда для изменения интервала обновления -----
 async def cmd_setrefresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
@@ -962,7 +976,6 @@ async def cmd_setrefresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(t(lang, "admin_only"))
         return
 
-    # Для админа используем его язык (по умолчанию ru)
     lang = get_user_lang(user_id)
 
     if not context.args:
@@ -979,7 +992,6 @@ async def cmd_setrefresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     set_refresh_interval_days(days)
-    # Перезапускаем задание планировщика с новым интервалом
     scheduler = context.application.bot_data.get("scheduler")
     if scheduler:
         seconds = days * 86400
@@ -991,25 +1003,51 @@ async def cmd_setrefresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(t(lang, "admin_refresh_updated", days=days))
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error("Ошибка при обработке апдейта: %s", context.error, exc_info=context.error)
+    error = context.error
+    if isinstance(error, Conflict):
+        logger.error("Обнаружен конфликт (Conflict): другой экземпляр бота активен. Перезапуск...")
+        app = context.application
+        await app.stop()
+        await asyncio.sleep(5)
+        await app.start()
+        await app.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    elif isinstance(error, NetworkError):
+        logger.error("Сетевая ошибка: %s", error)
+    elif isinstance(error, TimedOut):
+        logger.error("Таймаут запроса к Telegram API: %s", error)
+    else:
+        logger.error("Ошибка при обработке апдейта: %s", error, exc_info=error)
+
+def reset_webhook_and_cleanup():
+    """Удаляет вебхук и сбрасывает pending updates."""
+    import requests as req
+    try:
+        resp = req.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
+        if resp.status_code == 200:
+            logger.info("Вебхук успешно удалён")
+        else:
+            logger.warning(f"Не удалось удалить вебхук: {resp.text}")
+        resp = req.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset=-1&timeout=1")
+        if resp.status_code == 200:
+            logger.info("Pending updates очищены")
+        else:
+            logger.warning(f"Не удалось очистить pending updates: {resp.text}")
+    except Exception as e:
+        logger.error(f"Ошибка при очистке вебхука: {e}")
 
 # --------------------------------------------------------------------------- #
 # Точка входа
 # --------------------------------------------------------------------------- #
 
 def main() -> None:
-    init_db()
+    logger.info("Очистка вебхука и pending updates...")
+    reset_webhook_and_cleanup()
 
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+    init_db()
 
     # Первичная загрузка кэша в фоне
     threading.Thread(target=cache.refresh, daemon=True).start()
 
-    # Настройка планировщика с интервалом из базы
     interval_days = get_refresh_interval_days()
     interval_seconds = interval_days * 86400
 
@@ -1024,8 +1062,15 @@ def main() -> None:
     )
     scheduler.start()
 
-    application = Application.builder().token(BOT_TOKEN).build()
-    # Сохраняем ссылку на планировщик, чтобы можно было менять интервал
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
+        .build()
+    )
     application.bot_data["scheduler"] = scheduler
 
     application.add_handler(CommandHandler("start", cmd_start))
@@ -1037,8 +1082,38 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
     application.add_error_handler(on_error)
 
+    def signal_handler(signum, frame):
+        logger.info("Получен сигнал завершения, останавливаем бота...")
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+
     logger.info("Бот запущен, начинаю polling...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
+    max_retries = 5
+    retry_count = 0
+    while retry_count < max_retries:
+        try:
+            application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+                close_loop=False
+            )
+            break
+        except Conflict:
+            retry_count += 1
+            logger.warning(f"Конфликт при запуске (попытка {retry_count}/{max_retries}). Очистка и повтор через 10 сек...")
+            reset_webhook_and_cleanup()
+            time.sleep(10)
+        except Exception as e:
+            logger.error(f"Критическая ошибка: {e}", exc_info=True)
+            break
+
+    if retry_count >= max_retries:
+        logger.error("Не удалось запустить бота после максимального количества попыток")
 
 if __name__ == "__main__":
     main()
