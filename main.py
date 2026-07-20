@@ -726,7 +726,7 @@ TEXTS = {
 
 
 def t(lang: str, key: str, **kwargs) -> str:
-    lang = lang if lang in TEXTS else DEFAULT LANG
+    lang = lang if lang in TEXTS else DEFAULT_LANG
     template = TEXTS[lang].get(key, TEXTS[DEFAULT_LANG][key])
     return template.format(**kwargs) if kwargs else template
 
