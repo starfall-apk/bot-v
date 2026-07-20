@@ -16,6 +16,7 @@ mm2values.com защищён JS-проверкой (Cloudflare-подобный 
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import os
@@ -24,7 +25,7 @@ import sqlite3
 import threading
 import time
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import requests
@@ -66,7 +67,6 @@ DB_PATH = os.environ.get("DB_PATH", "mm2bot_settings.db")
 BASE_URL = "https://supremevalues.com"
 
 # Все категории сайта supremevalues.com для Murder Mystery 2.
-# Полная база, как и было решено ("Все категории (полная база, дольше обновление)").
 CATEGORIES: list[tuple[str, str]] = [
     ("godlies", "Godly"),
     ("chromas", "Chroma"),
@@ -127,15 +127,9 @@ class Item:
 
 
 # --------------------------------------------------------------------------- #
-# Нормализация текста / транслитерация (для fuzzy-поиска RU+EN, опечаток)
+# Нормализация текста / транслитерация
 # --------------------------------------------------------------------------- #
 
-# Таблица транслитерации кириллица -> латиница (упрощённая, для сопоставления
-# "тумпннлсть" -> "tumpnnlst" -> сравнение fuzzy с "nebula" не сработает
-# напрямую транслитерацией — для этого используется RU_ALIASES ниже, где для
-# каждого предмета явно задаётся точный русский перевод/эквивалент; сама же
-# транслитерация нужна для написаний вроде "nebula" латиницей российской
-# раскладкой ("y,ekf" и т.п.) и для общей устойчивости алгоритма).
 CYR_TO_LAT = {
     "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
     "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
@@ -144,8 +138,6 @@ CYR_TO_LAT = {
     "ъ": "", "ы": "y", "ь": "", "э": "e", "ю": "yu", "я": "ya",
 }
 
-# Раскладка клавиатуры: если человек случайно печатал английские буквы,
-# зажав русскую раскладку (или наоборот), приводим к нормальному виду.
 RU_LAYOUT_TO_EN = str.maketrans(
     "йцукенгшщзхъфывапролджэячсмитьбю.ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,",
     "qwertyuiop[]asdfghjkl;'zxcvbnm,./QWERTYUIOP{}ASDFGHJKL:\"ZXCVBNM<>?",
@@ -163,7 +155,6 @@ def strip_accents(text: str) -> str:
 
 
 def normalize_text(text: str) -> str:
-    """Базовая нормализация: нижний регистр, без акцентов, только буквы/цифры."""
     text = strip_accents(text.lower())
     text = re.sub(r"[^a-zа-я0-9]+", "", text)
     return text
@@ -175,13 +166,6 @@ def transliterate_ru_to_lat(text: str) -> str:
 
 
 def generate_query_variants(raw_query: str) -> list[str]:
-    """
-    Генерирует набор нормализованных вариантов запроса, чтобы покрыть:
-    - обычный текст на русском или английском;
-    - опечатки (их обрабатывает сам fuzzy-матчинг ниже, здесь не нужны);
-    - неправильную раскладку клавиатуры (рус. буквы вместо eng и наоборот);
-    - транслитерацию кириллицы в латиницу.
-    """
     raw = raw_query.strip()
     variants = set()
 
@@ -189,8 +173,6 @@ def generate_query_variants(raw_query: str) -> list[str]:
     if base:
         variants.add(base)
 
-    # Неправильная раскладка: если написали русскими буквами то, что должно
-    # быть латиницей (частая ошибка при незамеченной раскладке).
     swapped_to_en = raw.translate(RU_LAYOUT_TO_EN)
     v = normalize_text(swapped_to_en)
     if v:
@@ -201,7 +183,6 @@ def generate_query_variants(raw_query: str) -> list[str]:
     if v:
         variants.add(v)
 
-    # Транслитерация кириллицы -> латиница (напр. "торнадо" -> "tornado").
     translit = transliterate_ru_to_lat(raw)
     v = normalize_text(translit)
     if v:
@@ -213,12 +194,6 @@ def generate_query_variants(raw_query: str) -> list[str]:
 # --------------------------------------------------------------------------- #
 # Русские названия предметов
 # --------------------------------------------------------------------------- #
-# Список покрывает подавляющее большинство известных godly/chroma/legendary и
-# т.д. предметов MM2 устоявшимися русскоязычными названиями из сообщества.
-# Если для предмета нет "красивого" перевода в словаре — используется
-# автоматический перевод по словарю ключевых слов (см. auto_translate_ru),
-# что гарантирует, что у КАЖДОГО предмета будет русское отображаемое имя,
-# даже если оно не идеально художественное.
 
 RU_NAMES: dict[str, str] = {
     "nebula": "Туманность",
@@ -406,8 +381,6 @@ RU_NAMES: dict[str, str] = {
     "pig": "Свин",
 }
 
-# Ключевые слова для автоматического (частичного) перевода неизвестных
-# составных названий, если точного соответствия нет в RU_NAMES.
 WORD_TRANSLATIONS: dict[str, str] = {
     "chroma": "Хрома", "c.": "Хрома", "gun": "Пистолет", "blade": "Клинок",
     "knife": "Нож", "sword": "Меч", "axe": "Топор", "edge": "Грань",
@@ -422,10 +395,6 @@ WORD_TRANSLATIONS: dict[str, str] = {
 
 
 def auto_translate_ru(name_en: str) -> str:
-    """Резервный перевод: если точного соответствия нет, переводим по словам,
-    непереведённые слова оставляем как есть (транслитерация не нужна —
-    большинство фанатских названий MM2 в русском сообществе и так пишут
-    английскими словами вперемешку, это допустимо как fallback)."""
     words = name_en.split()
     result = []
     for w in words:
@@ -445,11 +414,10 @@ def get_ru_name(name_en: str) -> str:
 # Парсинг supremevalues.com
 # --------------------------------------------------------------------------- #
 
-# Regex для извлечения полей из текстового содержимого ячейки предмета.
-RE_VALUE = re.compile(r"Value\s*-\s*([\d,]+|N/?A)", re.IGNORECASE)
-RE_RANGED = re.compile(r"Ranged Value\s*-\s*\[([^\]]+)\]", re.IGNORECASE)
-RE_STABILITY = re.compile(r"Stability\s*-\s*([A-Za-z ]+?)(?:\s{2,}|\n|Demand)", re.IGNORECASE)
-RE_ORIGIN = re.compile(r"Origin\s*-\s*(.+?)(?:\s{2,}|\n|Last Change)", re.IGNORECASE)
+RE_VALUE = re.compile(r"Value\s*[-:]\s*([\d,]+|N/?A)", re.IGNORECASE)
+RE_RANGED = re.compile(r"Ranged\s*Value\s*[-:]\s*\[?([^\]\n]+)\]?", re.IGNORECASE)
+RE_STABILITY = re.compile(r"Stability\s*[-:]\s*([A-Za-z ]+?)(?:\s{2,}|\n|Demand|$)", re.IGNORECASE)
+RE_ORIGIN = re.compile(r"Origin\s*[-:]\s*(.+?)(?:\s{2,}|\n|Last Change|$)", re.IGNORECASE)
 
 STABILITY_MAP_RU = {
     "stable": "Стабилен",
@@ -474,7 +442,7 @@ def _parse_value_to_int(raw: str) -> Optional[int]:
 
 
 def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> list[Item]:
-    """Скачивает и парсит одну категорию с supremevalues.com."""
+    """Универсальный парсинг категории с supremevalues.com."""
     url = f"{BASE_URL}/mm2/{slug}"
     resp = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
@@ -483,59 +451,59 @@ def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> l
     items: list[Item] = []
     seen_names: set[str] = set()
 
-    # Каждая карточка предмета на supremevalues.com — это блок, содержащий
-    # <img> с изображением предмета (src содержит "/media/mm2<slug>/") и
-    # рядом текстовый блок с "Value - ... Stability - ... Demand - ...".
-    # Ищем по img, чтобы не зависеть от конкретных обёрточных div/table-классов.
-    img_pattern = re.compile(rf"/media/mm2{re.escape(slug)}/", re.IGNORECASE)
-    imgs = soup.find_all("img", src=img_pattern)
+    # Поиск по стандарту supremevalues (блоки .item-box) или фоллбэк по картинкам
+    item_blocks = soup.select(".item-box, .card, div[class*='item']")
+    if not item_blocks:
+        img_pattern = re.compile(rf"/media/mm2", re.IGNORECASE)
+        imgs = soup.find_all("img", src=img_pattern)
+        item_blocks = [img.parent for img in imgs]
 
-    for img in imgs:
-        image_url = img.get("src", "")
-        if image_url and image_url.startswith("/"):
-            image_url = BASE_URL + image_url
+    for block in item_blocks:
+        text_block = block.get_text(" ", strip=True)
+        if "Value" not in text_block:
+            # Пробуем подняться на пару уровней вверх
+            node = block
+            for _ in range(3):
+                if node.parent:
+                    node = node.parent
+                    if "Value" in node.get_text():
+                        text_block = node.get_text(" ", strip=True)
+                        block = node
+                        break
 
-        # Контейнер строки предмета — ближайший общий родитель, где также
-        # находится текст "Value -". Поднимаемся по дереву вверх.
-        container = img.parent
-        text_block = ""
-        node = container
-        for _ in range(6):  # ограничение глубины подъёма, чтобы не захватить всю страницу
-            if node is None:
-                break
-            node_text = node.get_text(" ", strip=True)
-            if "Value" in node_text and "Stability" in node_text:
-                text_block = node_text
-                break
-            node = node.parent
-
-        if not text_block:
-            continue
-
-        # Имя предмета: alt картинки чаще всего технический (может отличаться
-        # от отображаемого), поэтому берём текст сразу после имени картинки —
-        # первое "слово-заголовок" перед "Value -" в text_block.
         value_match = RE_VALUE.search(text_block)
         if not value_match:
             continue
 
-        name_part = text_block[: value_match.start()].strip()
-        # Убираем возможный мусор из подсказок про "Click on the item's image..."
-        name_part = re.sub(
-            r"Click on the item's image.*?Features!\s*", "", name_part, flags=re.IGNORECASE
-        )
-        name_part = name_part.strip()
+        # Извлекаем имя
+        name_part = ""
+        name_elem = block.select_one(".item-name, h3, h4, .title, b")
+        if name_elem:
+            name_part = name_elem.get_text().strip()
+        
         if not name_part:
-            name_part = img.get("alt", "").strip()
+            img = block.find("img")
+            if img and img.get("alt"):
+                name_part = img.get("alt").strip()
 
         if not name_part:
+            name_part = text_block[: value_match.start()].strip()
+            name_part = re.sub(r"Click on the item's image.*?Features!\s*", "", name_part, flags=re.IGNORECASE).strip()
+
+        if not name_part or len(name_part) < 2:
             continue
 
         display_name = name_part
-
         if display_name.lower() in seen_names:
             continue
         seen_names.add(display_name.lower())
+
+        img = block.find("img")
+        image_url = ""
+        if img and img.get("src"):
+            image_url = img.get("src")
+            if image_url.startswith("/"):
+                image_url = BASE_URL + image_url
 
         value_raw = value_match.group(1)
         value_int = _parse_value_to_int(value_raw)
@@ -572,9 +540,6 @@ def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> l
 
 
 def fetch_all_items() -> list[Item]:
-    """Скачивает все категории с supremevalues.com. Не бросает исключение
-    целиком, если одна категория не удалась — пропускает её с логом,
-    чтобы одна ошибка не обрушивала всё обновление кэша."""
     all_items: list[Item] = []
     with requests.Session() as session:
         for slug, rarity_label in CATEGORIES:
@@ -588,14 +553,14 @@ def fetch_all_items() -> list[Item]:
 
 
 # --------------------------------------------------------------------------- #
-# Кэш данных (потокобезопасный, обновляется по расписанию)
+# Кэш данных
 # --------------------------------------------------------------------------- #
 
 class ValuesCache:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._items: list[Item] = []
-        self._search_index: list[tuple[str, int]] = []  # (normalized_name, idx)
+        self._search_index: list[tuple[str, int]] = []
         self.last_updated: float = 0.0
         self.last_error: Optional[str] = None
 
@@ -619,8 +584,6 @@ class ValuesCache:
                 self.last_error = str(e)
 
     def search(self, query: str, limit: int = 5) -> list[tuple[Item, float]]:
-        """Fuzzy-поиск по всем сгенерированным вариантам запроса.
-        Возвращает список (Item, score) отсортированный по убыванию score."""
         with self._lock:
             items = self._items
             index = list(self._search_index)
@@ -633,11 +596,9 @@ class ValuesCache:
             return []
 
         choices = [key for key, _ in index]
-
         best_by_idx: dict[int, float] = {}
 
         for variant in variants:
-            # Точное совпадение — мгновенный "выстрел" с максимальным score.
             for key, idx in index:
                 if key == variant:
                     best_by_idx[idx] = 100.0
@@ -657,8 +618,6 @@ class ValuesCache:
             return []
 
         ranked = sorted(best_by_idx.items(), key=lambda kv: kv[1], reverse=True)
-
-        # Порог отсечения: ниже — считаем, что совпадения нет.
         THRESHOLD = 62.0
         result: list[tuple[Item, float]] = []
         for idx, score in ranked:
@@ -680,7 +639,7 @@ cache = ValuesCache()
 
 
 # --------------------------------------------------------------------------- #
-# Настройки пользователей (язык интерфейса) — SQLite
+# Настройки пользователей — SQLite
 # --------------------------------------------------------------------------- #
 
 DEFAULT_LANG = "ru"
@@ -724,7 +683,7 @@ def set_user_lang(user_id: int, lang: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Локализация текстов интерфейса
+# Локализация
 # --------------------------------------------------------------------------- #
 
 TEXTS = {
@@ -732,15 +691,14 @@ TEXTS = {
         "start": (
             "👋 Привет! Я бот для проверки ценности скинов Murder Mystery 2.\n\n"
             "Просто напиши название предмета на русском или английском "
-            "(опечатки не страшны) — например: <i>Nebula</i>, <i>Туманность</i> "
-            "или даже <i>тумпннлсть</i>.\n\n"
+            "(опечатки не страшны) — например: <i>Nebula</i>, <i>Туманность</i>.\n\n"
             "Настройки языка: /settings"
         ),
         "help": (
             "Напиши название предмета MM2 — я найду его ценность.\n"
             "Команды:\n"
             "/settings — сменить язык интерфейса\n"
-            "/status — статус базы данных (когда обновлялась)"
+            "/status — статус базы данных"
         ),
         "settings_title": "🌐 Выберите язык интерфейса:",
         "settings_saved": "✅ Язык сохранён: {lang}",
@@ -748,63 +706,31 @@ TEXTS = {
             "😕 Ничего не найдено по запросу «{query}».\n"
             "Проверь написание или попробуй английское название предмета."
         ),
-        "searching": "🔎 Ищу...",
         "value_label": "Примерная стоимость",
         "status_label": "Статус",
         "stability_label": "Стабильность",
-        "unknown_stability": "Неизвестно",
-        "cache_empty": (
-            "⏳ База данных ещё загружается, попробуй через минуту."
-        ),
-        "status_report": (
-            "📊 Предметов в базе: {count}\n"
-            "🕒 Последнее обновление: {last_update}\n"
-            "⚠️ Ошибка последнего обновления: {error}"
-        ),
-        "status_report_ok": (
-            "📊 Предметов в базе: {count}\n"
-            "🕒 Последнее обновление: {last_update}"
-        ),
+        "cache_empty": "⏳ База данных загружается, попробуй через минуту.",
+        "status_report": "📊 Предметов в базе: {count}\n🕒 Последнее обновление: {last_update}\n⚠️ Ошибка: {error}",
+        "status_report_ok": "📊 Предметов в базе: {count}\n🕒 Последнее обновление: {last_update}",
         "never": "ещё не обновлялось",
-        "no_error": "нет",
     },
     "en": {
         "start": (
             "👋 Hi! I'm a bot for checking Murder Mystery 2 item values.\n\n"
-            "Just type an item name in Russian or English (typos are fine) — "
-            "for example: <i>Nebula</i>, <i>Туманность</i> or even "
-            "<i>tumpnnlst</i>.\n\n"
+            "Just type an item name in Russian or English — for example: <i>Nebula</i>.\n\n"
             "Language settings: /settings"
         ),
-        "help": (
-            "Type an MM2 item name — I'll find its value.\n"
-            "Commands:\n"
-            "/settings — change interface language\n"
-            "/status — database status (last update time)"
-        ),
+        "help": "Type an MM2 item name.\nCommands:\n/settings — change language\n/status — database status",
         "settings_title": "🌐 Choose interface language:",
         "settings_saved": "✅ Language saved: {lang}",
-        "not_found": (
-            "😕 Nothing found for «{query}».\n"
-            "Check the spelling or try the item's English name."
-        ),
-        "searching": "🔎 Searching...",
+        "not_found": "😕 Nothing found for «{query}».",
         "value_label": "Estimated value",
         "status_label": "Status",
         "stability_label": "Stability",
-        "unknown_stability": "Unknown",
-        "cache_empty": "⏳ Database is still loading, please try again in a minute.",
-        "status_report": (
-            "📊 Items in database: {count}\n"
-            "🕒 Last update: {last_update}\n"
-            "⚠️ Last update error: {error}"
-        ),
-        "status_report_ok": (
-            "📊 Items in database: {count}\n"
-            "🕒 Last update: {last_update}"
-        ),
+        "cache_empty": "⏳ Database is loading, please try again in a minute.",
+        "status_report": "📊 Items: {count}\n🕒 Last update: {last_update}\n⚠️ Error: {error}",
+        "status_report_ok": "📊 Items: {count}\n🕒 Last update: {last_update}",
         "never": "not updated yet",
-        "no_error": "none",
     },
 }
 
@@ -822,10 +748,6 @@ def localized_stability(lang: str, stability_en: str) -> str:
     return STABILITY_MAP_RU.get(key, stability_en)
 
 
-# --------------------------------------------------------------------------- #
-# Форматирование ответа
-# --------------------------------------------------------------------------- #
-
 def format_item_caption(item: Item, lang: str) -> str:
     name_en = html.escape(item.name)
 
@@ -837,7 +759,7 @@ def format_item_caption(item: Item, lang: str) -> str:
 
     value_line = item.value_display
     if item.ranged_value:
-        value_line = f"{item.value_display}  [{item.ranged_value}]"
+        value_line = f"{item.value_display} [{item.ranged_value}]"
 
     stability_text = localized_stability(lang, item.stability)
 
@@ -854,7 +776,7 @@ def format_item_caption(item: Item, lang: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Обработчики команд Telegram
+# Обработчики
 # --------------------------------------------------------------------------- #
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -899,13 +821,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         else t(lang, "never")
     )
     if cache.last_error:
-        text = t(
-            lang,
-            "status_report",
-            count=count,
-            last_update=last_update,
-            error=cache.last_error,
-        )
+        text = t(lang, "status_report", count=count, last_update=last_update, error=cache.last_error)
     else:
         text = t(lang, "status_report_ok", count=count, last_update=last_update)
     await update.message.reply_text(text)
@@ -945,12 +861,12 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         else:
             await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
     except Exception:
-        logger.exception("Не удалось отправить фото, отправляю текстом")
+        logger.exception("Ошибка отправки фото, отправляю текстом")
         await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error("Ошибка при обработке апдейта: %s", context.error, exc_info=context.error)
+    logger.error("Ошибка обработки апдейта: %s", context.error, exc_info=context.error)
 
 
 # --------------------------------------------------------------------------- #
@@ -959,10 +875,6 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def main() -> None:
     init_db()
-
-    # Первичная загрузка кэша синхронно перед стартом бота, чтобы первый же
-    # пользовательский запрос уже мог найти предмет (без ожидания первого
-    # тика планировщика).
     cache.refresh()
 
     scheduler = BackgroundScheduler(timezone="UTC")
@@ -991,4 +903,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # Явное создание asyncio event loop для предотвращения "no current event loop"
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        main()
+    finally:
+        loop.close()
