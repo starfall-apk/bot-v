@@ -11,6 +11,7 @@ ScrapingAnt API для гарантированного обхода анти-б
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 import os
@@ -427,9 +428,20 @@ def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> l
     target_url = f"{BASE_URL}/mm2/{slug}"
     api_url = f"https://api.scrapingant.com/v2/general?url={target_url}&x-api-key={SCRAPINGANT_API_KEY}&browser=true"
 
-    resp = session.get(api_url, timeout=REQUEST_TIMEOUT)
-    if resp.status_code != 200:
-        raise RuntimeError(f"ScrapingAnt API вернул статус {resp.status_code}")
+    max_retries = 3
+    resp = None
+    for attempt in range(max_retries):
+        resp = session.get(api_url, timeout=REQUEST_TIMEOUT)
+        if resp.status_code == 200:
+            break
+        elif resp.status_code == 409:
+            logger.warning("ScrapingAnt 409 для '%s', ожидание 3 сек (попытка %d/%d)", slug, attempt + 1, max_retries)
+            time.sleep(3)
+        else:
+            raise RuntimeError(f"ScrapingAnt API вернул статус {resp.status_code}")
+
+    if not resp or resp.status_code != 200:
+        raise RuntimeError(f"ScrapingAnt API превысил лимит попыток (статус {resp.status_code if resp else 'None'})")
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -503,6 +515,7 @@ def fetch_all_items() -> list[Item]:
                 cat_items = fetch_category(session, slug, rarity_label)
                 logger.info("Категория '%s': найдено %d предметов", slug, len(cat_items))
                 all_items.extend(cat_items)
+                time.sleep(1.5)  # Пауза между запросами для предотвращения 409 ошибок
             except Exception:
                 logger.exception("Не удалось спарсить категорию '%s'", slug)
     return all_items
@@ -525,7 +538,7 @@ class ValuesCache:
         try:
             items = fetch_all_items()
             if not items:
-                raise RuntimeError("Парсинг вернул 0 предметов — проверьте API ключ или сайт.")
+                raise RuntimeError("Парсинг вернул 0 предметов — проверьте API ключ или структуру сайта.")
             with self._lock:
                 self._items = items
                 self._search_index = [
@@ -876,8 +889,16 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 def main() -> None:
     init_db()
 
-    # Загружаем кэш при старте
-    cache.refresh()
+    # Фикс для Python 3.14 (создание event loop в главном потоке)
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    # Запускаем первичное обновление кэша в ФОНОВОМ ПОТОКЕ,
+    # чтобы бот стартовал мгновенно и Render не перезапускал его по таймауту
+    threading.Thread(target=cache.refresh, daemon=True).start()
 
     scheduler = BackgroundScheduler(timezone="UTC")
     scheduler.add_job(
