@@ -2,22 +2,19 @@
 MM2 Values Telegram Bot
 ========================
 Ищет ценность скинов/оружия Murder Mystery 2 (Roblox) по названию на русском
-или английском языке (с опечатками и вариациями), парся supremevalues.com.
+или английском языке (с опечатками и вариациями), парся supremevalues.com через
+ScrapingAnt API для гарантированного обхода анти-бот защиты (Incapsula/Imperva).
 
-Источник данных: только supremevalues.com.
-Деплой: Render (Web Service на бесплатном тарифе).
-Файлы: main.py, requirements.txt.
+Деплой: Render (Background Worker / Web Service с polling) / Termux.
+Файлы: main.py, requirements.txt — больше ничего не требуется.
 """
 
 from __future__ import annotations
 
-import asyncio
 import html
-import http.server
 import logging
 import os
 import re
-import socketserver
 import sqlite3
 import threading
 import time
@@ -56,6 +53,8 @@ if not BOT_TOKEN:
         "(в настройках Render: Environment -> Add Environment Variable)."
     )
 
+SCRAPINGANT_API_KEY = os.environ.get("SCRAPINGANT_API_KEY", "2e2075e51d5e4236a474c52c2434d15a")
+
 # Как часто обновлять кэш ценностей (в секундах). По умолчанию — раз в час.
 REFRESH_INTERVAL_SECONDS = int(os.environ.get("REFRESH_INTERVAL_SECONDS", "3600"))
 
@@ -81,17 +80,7 @@ CATEGORIES: list[tuple[str, str]] = [
     ("untradables", "Untradable"),
 ]
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
-    "Connection": "keep-alive",
-}
-
-REQUEST_TIMEOUT = 20
+REQUEST_TIMEOUT = 45
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -124,7 +113,7 @@ class Item:
 
 
 # --------------------------------------------------------------------------- #
-# Нормализация текста / транслитерация
+# Нормализация текста / транслитерация (для fuzzy-поиска RU+EN, опечаток)
 # --------------------------------------------------------------------------- #
 
 CYR_TO_LAT = {
@@ -408,13 +397,8 @@ def get_ru_name(name_en: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Парсинг supremevalues.com
+# Парсинг supremevalues.com через ScrapingAnt API
 # --------------------------------------------------------------------------- #
-
-RE_VALUE = re.compile(r"Value\s*[-:]\s*([\d,]+|N/?A)", re.IGNORECASE)
-RE_RANGED = re.compile(r"Ranged\s*Value\s*[-:]\s*\[?([^\]\n]+)\]?", re.IGNORECASE)
-RE_STABILITY = re.compile(r"Stability\s*[-:]\s*([A-Za-z ]+?)(?:\s{2,}|\n|Demand|$)", re.IGNORECASE)
-RE_ORIGIN = re.compile(r"Origin\s*[-:]\s*(.+?)(?:\s{2,}|\n|Last Change|$)", re.IGNORECASE)
 
 STABILITY_MAP_RU = {
     "stable": "Стабилен",
@@ -439,81 +423,60 @@ def _parse_value_to_int(raw: str) -> Optional[int]:
 
 
 def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> list[Item]:
-    url = f"{BASE_URL}/mm2/{slug}"
-    resp = session.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "lxml")
+    """Скачивает и парсит одну категорию с supremevalues.com через ScrapingAnt."""
+    target_url = f"{BASE_URL}/mm2/{slug}"
+    api_url = f"https://api.scrapingant.com/v2/general?url={target_url}&x-api-key={SCRAPINGANT_API_KEY}&browser=true"
+
+    resp = session.get(api_url, timeout=REQUEST_TIMEOUT)
+    if resp.status_code != 200:
+        raise RuntimeError(f"ScrapingAnt API вернул статус {resp.status_code}")
+
+    soup = BeautifulSoup(resp.text, "html.parser")
 
     items: list[Item] = []
     seen_names: set[str] = set()
 
-    item_blocks = soup.select(".item-box, .card, div[class*='item']")
-    if not item_blocks:
-        img_pattern = re.compile(rf"/media/mm2", re.IGNORECASE)
-        imgs = soup.find_all("img", src=img_pattern)
-        item_blocks = [img.parent for img in imgs]
+    cards = soup.find_all("div", class_="itemcolumn")
 
-    for block in item_blocks:
-        text_block = block.get_text(" ", strip=True)
-        if "Value" not in text_block:
-            node = block
-            for _ in range(3):
-                if node.parent:
-                    node = node.parent
-                    if "Value" in node.get_text():
-                        text_block = node.get_text(" ", strip=True)
-                        block = node
-                        break
-
-        value_match = RE_VALUE.search(text_block)
-        if not value_match:
-            continue
-
-        name_part = ""
-        name_elem = block.select_one(".item-name, h3, h4, .title, b")
-        if name_elem:
-            name_part = name_elem.get_text().strip()
+    for card in cards:
+        head_tag = card.find("div", class_="itemhead")
+        btn_tag = card.find("button")
         
-        if not name_part:
-            img = block.find("img")
-            if img and img.get("alt"):
-                name_part = img.get("alt").strip()
+        display_name = ""
+        if btn_tag and btn_tag.get("data-name"):
+            display_name = btn_tag.get("data-name").strip()
+        elif head_tag:
+            display_name = head_tag.get_text(strip=True)
 
-        if not name_part:
-            name_part = text_block[: value_match.start()].strip()
-            name_part = re.sub(r"Click on the item's image.*?Features!\s*", "", name_part, flags=re.IGNORECASE).strip()
-
-        if not name_part or len(name_part) < 2:
+        if not display_name:
             continue
 
-        display_name = name_part
         if display_name.lower() in seen_names:
             continue
         seen_names.add(display_name.lower())
 
-        img = block.find("img")
-        image_url = ""
-        if img and img.get("src"):
-            image_url = img.get("src")
-            if image_url.startswith("/"):
-                image_url = BASE_URL + image_url
+        val_tag = card.find("b", class_="itemvalue")
+        if val_tag:
+            value_raw = val_tag.get_text(strip=True)
+        else:
+            value_raw = card.get("data-value", "N/A")
 
-        value_raw = value_match.group(1)
         value_int = _parse_value_to_int(value_raw)
         value_display = value_raw if value_int is None else f"{value_int:,}".replace(",", " ")
 
-        ranged_match = RE_RANGED.search(text_block)
-        ranged_value = None
-        if ranged_match:
-            rv = ranged_match.group(1).strip()
-            if rv and rv.upper() != "N/A":
-                ranged_value = rv
+        stability = card.get("data-stability", "Неизвестно")
 
-        stability_match = RE_STABILITY.search(text_block)
-        stability = stability_match.group(1).strip() if stability_match else "Неизвестно"
+        img_tag = card.find("img", class_="itemimage")
+        image_url = ""
+        if img_tag and img_tag.get("src"):
+            src = img_tag["src"]
+            if src.startswith(".."):
+                src = src.replace("..", BASE_URL)
+            elif src.startswith("/"):
+                src = BASE_URL + src
+            image_url = src
 
-        origin_match = RE_ORIGIN.search(text_block)
-        origin = origin_match.group(1).strip() if origin_match else ""
+        origin = card.get("data-event", "")
 
         items.append(
             Item(
@@ -522,7 +485,7 @@ def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> l
                 rarity=rarity_label,
                 value=value_int,
                 value_display=value_display,
-                ranged_value=ranged_value,
+                ranged_value=None,
                 stability=stability,
                 image_url=image_url,
                 origin=origin,
@@ -546,7 +509,7 @@ def fetch_all_items() -> list[Item]:
 
 
 # --------------------------------------------------------------------------- #
-# Кэш данных
+# Кэш данных (потокобезопасный, обновляется по расписанию)
 # --------------------------------------------------------------------------- #
 
 class ValuesCache:
@@ -562,7 +525,7 @@ class ValuesCache:
         try:
             items = fetch_all_items()
             if not items:
-                raise RuntimeError("Парсинг вернул 0 предметов — сайт мог изменить структуру.")
+                raise RuntimeError("Парсинг вернул 0 предметов — проверьте API ключ или сайт.")
             with self._lock:
                 self._items = items
                 self._search_index = [
@@ -611,6 +574,7 @@ class ValuesCache:
             return []
 
         ranked = sorted(best_by_idx.items(), key=lambda kv: kv[1], reverse=True)
+
         THRESHOLD = 62.0
         result: list[tuple[Item, float]] = []
         for idx, score in ranked:
@@ -632,7 +596,7 @@ cache = ValuesCache()
 
 
 # --------------------------------------------------------------------------- #
-# Настройки пользователей — SQLite
+# Настройки пользователей (язык интерфейса) — SQLite
 # --------------------------------------------------------------------------- #
 
 DEFAULT_LANG = "ru"
@@ -676,7 +640,7 @@ def set_user_lang(user_id: int, lang: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Локализация
+# Локализация текстов интерфейса
 # --------------------------------------------------------------------------- #
 
 TEXTS = {
@@ -684,14 +648,15 @@ TEXTS = {
         "start": (
             "👋 Привет! Я бот для проверки ценности скинов Murder Mystery 2.\n\n"
             "Просто напиши название предмета на русском или английском "
-            "(опечатки не страшны) — например: <i>Nebula</i>, <i>Туманность</i>.\n\n"
+            "(опечатки не страшны) — например: <i>Nebula</i>, <i>Туманность</i> "
+            "или даже <i>тумпннлсть</i>.\n\n"
             "Настройки языка: /settings"
         ),
         "help": (
             "Напиши название предмета MM2 — я найду его ценность.\n"
             "Команды:\n"
             "/settings — сменить язык интерфейса\n"
-            "/status — статус базы данных"
+            "/status — статус базы данных (когда обновлялась)"
         ),
         "settings_title": "🌐 Выберите язык интерфейса:",
         "settings_saved": "✅ Язык сохранён: {lang}",
@@ -699,37 +664,69 @@ TEXTS = {
             "😕 Ничего не найдено по запросу «{query}».\n"
             "Проверь написание или попробуй английское название предмета."
         ),
+        "searching": "🔎 Ищу...",
         "value_label": "Примерная стоимость",
-        "status_label": "Статус",
+        "status_label": "Категория",
         "stability_label": "Стабильность",
-        "cache_empty": "⏳ База данных загружается, попробуй через минуту.",
-        "status_report": "📊 Предметов в базе: {count}\n🕒 Последнее обновление: {last_update}\n⚠️ Ошибка: {error}",
-        "status_report_ok": "📊 Предметов в базе: {count}\n🕒 Последнее обновление: {last_update}",
+        "unknown_stability": "Неизвестно",
+        "cache_empty": (
+            "⏳ База данных ещё загружается, попробуй через минуту."
+        ),
+        "status_report": (
+            "📊 Предметов в базе: {count}\n"
+            "🕒 Последнее обновление: {last_update}\n"
+            "⚠️ Ошибка последнего обновления: {error}"
+        ),
+        "status_report_ok": (
+            "📊 Предметов в базе: {count}\n"
+            "🕒 Последнее обновление: {last_update}"
+        ),
         "never": "ещё не обновлялось",
+        "no_error": "нет",
     },
     "en": {
         "start": (
             "👋 Hi! I'm a bot for checking Murder Mystery 2 item values.\n\n"
-            "Just type an item name in Russian or English — for example: <i>Nebula</i>.\n\n"
+            "Just type an item name in Russian or English (typos are fine) — "
+            "for example: <i>Nebula</i>, <i>Туманность</i> or even "
+            "<i>tumpnnlst</i>.\n\n"
             "Language settings: /settings"
         ),
-        "help": "Type an MM2 item name.\nCommands:\n/settings — change language\n/status — database status",
+        "help": (
+            "Type an MM2 item name — I'll find its value.\n"
+            "Commands:\n"
+            "/settings — change interface language\n"
+            "/status — database status (last update time)"
+        ),
         "settings_title": "🌐 Choose interface language:",
         "settings_saved": "✅ Language saved: {lang}",
-        "not_found": "😕 Nothing found for «{query}».",
+        "not_found": (
+            "😕 Nothing found for «{query}».\n"
+            "Check the spelling or try the item's English name."
+        ),
+        "searching": "🔎 Searching...",
         "value_label": "Estimated value",
-        "status_label": "Status",
+        "status_label": "Category",
         "stability_label": "Stability",
-        "cache_empty": "⏳ Database is loading, please try again in a minute.",
-        "status_report": "📊 Items: {count}\n🕒 Last update: {last_update}\n⚠️ Error: {error}",
-        "status_report_ok": "📊 Items: {count}\n🕒 Last update: {last_update}",
+        "unknown_stability": "Unknown",
+        "cache_empty": "⏳ Database is still loading, please try again in a minute.",
+        "status_report": (
+            "📊 Items in database: {count}\n"
+            "🕒 Last update: {last_update}\n"
+            "⚠️ Last update error: {error}"
+        ),
+        "status_report_ok": (
+            "📊 Items in database: {count}\n"
+            "🕒 Last update: {last_update}"
+        ),
         "never": "not updated yet",
+        "no_error": "none",
     },
 }
 
 
 def t(lang: str, key: str, **kwargs) -> str:
-    lang = lang if lang in TEXTS else DEFAULT_LANG
+    lang = lang if lang in TEXTS else DEFAULT LANG
     template = TEXTS[lang].get(key, TEXTS[DEFAULT_LANG][key])
     return template.format(**kwargs) if kwargs else template
 
@@ -740,6 +737,10 @@ def localized_stability(lang: str, stability_en: str) -> str:
     key = stability_en.strip().lower()
     return STABILITY_MAP_RU.get(key, stability_en)
 
+
+# --------------------------------------------------------------------------- #
+# Форматирование ответа
+# --------------------------------------------------------------------------- #
 
 def format_item_caption(item: Item, lang: str) -> str:
     name_en = html.escape(item.name)
@@ -752,7 +753,7 @@ def format_item_caption(item: Item, lang: str) -> str:
 
     value_line = item.value_display
     if item.ranged_value:
-        value_line = f"{item.value_display} [{item.ranged_value}]"
+        value_line = f"{item.value_display}  [{item.ranged_value}]"
 
     stability_text = localized_stability(lang, item.stability)
 
@@ -769,7 +770,7 @@ def format_item_caption(item: Item, lang: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Обработчики
+# Обработчики команд Telegram
 # --------------------------------------------------------------------------- #
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -814,7 +815,13 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         else t(lang, "never")
     )
     if cache.last_error:
-        text = t(lang, "status_report", count=count, last_update=last_update, error=cache.last_error)
+        text = t(
+            lang,
+            "status_report",
+            count=count,
+            last_update=last_update,
+            error=cache.last_error,
+        )
     else:
         text = t(lang, "status_report_ok", count=count, last_update=last_update)
     await update.message.reply_text(text)
@@ -854,20 +861,22 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         else:
             await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
     except Exception:
-        logger.exception("Ошибка отправки фото, отправляю текстом")
+        logger.exception("Не удалось отправить фото, отправляю текстом")
         await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error("Ошибка обработки апдейта: %s", context.error, exc_info=context.error)
+    logger.error("Ошибка при обработке апдейта: %s", context.error, exc_info=context.error)
 
 
 # --------------------------------------------------------------------------- #
-# Точка входа и Сервер-заглушка
+# Точка входа
 # --------------------------------------------------------------------------- #
 
 def main() -> None:
     init_db()
+
+    # Загружаем кэш при старте
     cache.refresh()
 
     scheduler = BackgroundScheduler(timezone="UTC")
@@ -895,28 +904,5 @@ def main() -> None:
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
-def run_dummy_server():
-    """Запускает простейший HTTP-сервер, чтобы Render Free Tier видел открытый порт."""
-    port = int(os.environ.get("PORT", 10000))
-    handler = http.server.SimpleHTTPRequestHandler
-    
-    # Отключаем логирование HTTP-запросов (ping-запросов от Render), 
-    # чтобы они не спамили в консоль
-    handler.log_message = lambda *args: None
-    
-    with socketserver.TCPServer(("", port), handler) as httpd:
-        logger.info(f"Dummy HTTP сервер запущен на порту {port}")
-        httpd.serve_forever()
-
-
 if __name__ == "__main__":
-    # 1. Запускаем фейковый веб-сервер в фоновом потоке для Render
-    threading.Thread(target=run_dummy_server, daemon=True).start()
-
-    # 2. Явно создаем asyncio event loop для библиотеки telegram
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        main()
-    finally:
-        loop.close()
+    main()
