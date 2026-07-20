@@ -1,21 +1,12 @@
 """
-MM2 Values Telegram Bot (v2.4.0)
+MM2 Values Telegram Bot (v2.3.1)
 =================================
-- Убран кастомный HTTPAdapter, вызывавший TypeError на urllib3 2.x
-  (PoolKey.__new__() got an unexpected keyword argument 'key_max_header_size').
-- Каждая категория теперь запрашивается новой сессией/новыми заголовками,
-  чтобы избежать накопления Cookie/заголовков между запросами через ScrapingAnt
-  ("огромное количество заголовков").
-- Обработчик ошибок Conflict больше не падает, если Application уже остановлен.
-- Из списка автообновляемых категорий убрана 'evos' (у эво нет ценности в валюте).
-- Автоматический перевод названий на русский: не полагается на ручной словарь
-  устоявшихся фраз, а транслитерирует/переводит слова так, как их обычно
-  переводит сам Roblox (например Blade -> Лезвие, а не Клинок), с учётом
-  словосочетаний вроде "ледокол арбалет"/"ледокол топор".
+Исправление совместимости с urllib3 >= 2.0: параметр maxheaders заменён на max_header_size.
 """
 
 from __future__ import annotations
 
+import asyncio
 import html
 import io
 import logging
@@ -29,9 +20,13 @@ import threading
 import time
 import unicodedata
 from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3 import __version__ as urllib3_version
+from urllib3.poolmanager import PoolManager
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz, process
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -54,6 +49,20 @@ from telegram.ext import (
 from telegram.error import Conflict, NetworkError, TimedOut
 
 # --------------------------------------------------------------------------- #
+# Адаптер с увеличенным лимитом заголовков, совместимый с urllib3 1.x и 2.x
+# --------------------------------------------------------------------------- #
+
+class HeaderRichHTTPAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        # urllib3 >= 2.0 использует max_header_size (байты), иначе maxheaders (количество)
+        major, minor, *_ = map(int, urllib3_version.split('.'))
+        if (major, minor) >= (2, 0):
+            kwargs['max_header_size'] = 32768   # 32 КБ — более чем достаточно
+        else:
+            kwargs['maxheaders'] = 200
+        return super().init_poolmanager(*args, **kwargs)
+
+# --------------------------------------------------------------------------- #
 # Конфигурация
 # --------------------------------------------------------------------------- #
 
@@ -67,6 +76,12 @@ if not BOT_TOKEN:
 SCRAPINGANT_API_KEY = os.environ.get("SCRAPINGANT_API_KEY", "2e2075e51d5e4236a474c52c2434d15a")
 DB_PATH = os.environ.get("DB_PATH", "mm2bot_settings.db")
 
+# Render.com предоставляет порт через переменную окружения PORT и ожидает,
+# что веб-сервис начнёт его слушать вскоре после старта, иначе деплой
+# считается неудачным ("порт не найден"). Бот сам по себе HTTP не раздаёт
+# (только Telegram polling), поэтому поднимаем простой health-check сервер.
+PORT = int(os.environ.get("PORT", "10000"))
+
 BASE_URL = "https://supremevalues.com"
 
 CATEGORIES: list[tuple[str, str]] = [
@@ -75,8 +90,7 @@ CATEGORIES: list[tuple[str, str]] = [
     ("legendaries", "Legendary"),
     ("ancients", "Ancient"),
     ("vintages", "Vintage"),
-    # "evos" намеренно исключены: у Evo-предметов нет ценности в валюте MM2,
-    # поэтому их не нужно парсить/обновлять вместе с остальными категориями.
+    ("evos", "Evo"),
     ("rares", "Rare"),
     ("uncommons", "Uncommon"),
     ("commons", "Common"),
@@ -96,6 +110,33 @@ logger = logging.getLogger("mm2bot")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext.Application").setLevel(logging.WARNING)
+
+# --------------------------------------------------------------------------- #
+# HTTP health-check сервер (нужен только для Render.com Web Service)
+# --------------------------------------------------------------------------- #
+
+class _HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802 (имя метода задано base-классом)
+        body = b"OK"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args) -> None:  # подавляем шумные логи
+        pass
+
+def start_health_server(port: int) -> None:
+    def _run() -> None:
+        try:
+            server = ThreadingHTTPServer(("0.0.0.0", port), _HealthCheckHandler)
+            logger.info("Health-check сервер запущен на 0.0.0.0:%d", port)
+            server.serve_forever()
+        except Exception:
+            logger.exception("Не удалось запустить health-check сервер на порту %d", port)
+
+    threading.Thread(target=_run, daemon=True, name="health-check-server").start()
 
 # --------------------------------------------------------------------------- #
 # Модель данных предмета
@@ -172,248 +213,216 @@ def generate_query_variants(raw_query: str) -> list[str]:
         variants.add(v)
     return list(variants)
 
-# --------------------------------------------------------------------------- #
-# Автоматический перевод названий (в стиле локализации Roblox/MM2-комьюнити)
-# --------------------------------------------------------------------------- #
-#
-# Раньше здесь был огромный ручной словарь ПОЛНЫХ фраз (RU_NAMES), который
-# приходилось поддерживать вручную под каждый новый предмет и который не
-# совпадал с тем, как эти слова реально переводит Roblox/устоявшееся
-# русскоязычное MM2-комьюнити (например "Blade" переводят как "Лезвие",
-# а не "Клинок").
-#
-# Теперь перевод полностью автоматический и работает на уровне КОРНЕЙ/МОРФЕМ:
-#  1. Название разбивается на слова — как по пробелам/апострофам, так и
-#     внутри "слитных" английских составных слов вида "Ghostblade",
-#     "Nightblade", "Icebreaker" (разбиваем по известным
-#     суффиксам-морфемам: blade, gun, axe, shard, blaster, cane, ...).
-#  2. Каждый кусок ищется в ROOT_TRANSLATIONS (общий словарь корней,
-#     которым Roblox/комьюнити переводит одинаково независимо от того,
-#     в каком предмете слово встретилось).
-#  3. Отдельные "неразбиваемые" составные названия, которые комьюнити
-#     переводит одним словом целиком, а не по частям (например
-#     "Icebreaker" -> "Ледокол", а не "Лёд" + "Ломающий"), хранятся в
-#     MERGED_COMPOUND_OVERRIDES — это единственное место, которое вообще
-#     похоже на "словарь целых фраз", и оно намеренно маленькое: только
-#     туда, где раздельный перевод по корням даёт не тот результат,
-#     который использует комьюнити.
-#
-# Благодаря этому человек может ввести название ровно так, как его даёт
-# Roblox, и не нужно вручную дописывать перевод под каждый новый предмет —
-# новые слова, составленные из уже известных корней, переводятся сами.
-
-ROOT_TRANSLATIONS: dict[str, str] = {
-    # --- Оружие / типы предметов ---
-    "gun": "Пистолет", "revolver": "Револьвер", "blaster": "Бластер",
-    "beam": "Луч", "cannon": "Пушка", "shot": "Выстрел", "raygun": "Лучемёт",
-    "blade": "Лезвие", "knife": "Нож", "sword": "Меч", "dagger": "Кинжал",
-    "axe": "Топор", "battleaxe": "Боевой топор", "scythe": "Коса",
-    "edge": "Грань", "shard": "Осколок", "saw": "Пила", "handsaw": "Ножовка",
-    "cane": "Трость", "wand": "Жезл", "luger": "Люгер", "sabre": "Сабля",
-    "saber": "Сабля", "spear": "Копьё", "claw": "Коготь", "fang": "Клык",
-    "chopper": "Тесак", "cleaver": "Тесак", "crusher": "Дробитель",
-    "breaker": "Ледокол", "piercer": "Пронзатель", "slasher": "Потрошитель",
-    "phaser": "Фазер", "laser": "Лазер", "harvester": "Жнец",
-    "wing": "Крыло", "beam gun": "Лучевой пистолет",
-    # --- Стихии / темы ---
-    "ice": "Лёд", "iceflake": "Ледяная снежинка", "icewing": "Ледяное крыло",
-    "fire": "Огонь", "flame": "Пламя", "flames": "Пламя", "heat": "Жар",
-    "frost": "Мороз", "frostbite": "Обморожение", "snow": "Снег",
-    "snowflake": "Снежинка", "snowstorm": "Снежная буря", "blizzard": "Метель",
-    "winter": "Зима", "summer": "Лето", "spring": "Весна", "autumn": "Осень",
-    "chill": "Холод", "midnight": "Полночь", "darkness": "Тьма",
-    "shadow": "Тень", "void": "Пустота", "corrupt": "Порча",
-    "light": "Светлый", "dark": "Тёмный", "bright": "Яркий",
-    "star": "Звезда", "galaxy": "Галактика", "comet": "Комета",
-    "meteor": "Метеор", "aurora": "Аврора", "eclipse": "Затмение",
-    "nebula": "Туманность", "constellation": "Созвездие", "cosmic": "Космический",
-    "crystal": "Кристалл", "gemstone": "Драгоценный камень", "pearl": "Жемчуг",
-    "pearlshine": "Жемчужный блеск", "prismatic": "Призматический",
-    "rainbow": "Радуга", "pixel": "Пиксель", "virtual": "Виртуальный",
-    "plasma": "Плазма", "bio": "Био", "toxic": "Токсичный",
-    "electric": "Электрический", "spectral": "Спектральный", "spectre": "Призрак",
-    "ghost": "Призрак", "phantom": "Фантом", "soul": "Душа", "spirit": "Дух",
-    "bone": "Костяной", "blood": "Кровавый", "death": "Смерть",
-    "vampire": "Вампир", "zombie": "Зомби", "skeleton": "Скелет",
-    "night": "Ночной", "day": "Дневной", "dawn": "Рассвет",
-    "sunrise": "Рассвет", "sunset": "Закат", "moon": "Луна",
-    "harvest moon": "Урожайная луна", "eternal": "Вечный",
-    "evergreen": "Вечнозелёный", "clockwork": "Заводной механизм",
-    "makeshift": "Самодельный", "swirly": "Спиральный", "elderwood": "Элдервуд",
-    "logchopper": "Лесоруб", "hallow": "Хэллоуин", "hallows": "Хэллоуин",
-    "xmas": "Рождество", "christmas": "Рождество", "jingle": "Звенящий",
-    "candy": "Леденец", "candleflame": "Пламя свечи", "peppermint": "Мята перечная",
-    "ginger": "Имбирный", "gingermint": "Имбирная мята", "cookie": "Печенье",
-    "sugar": "Сахар", "sweet": "Конфета", "treat": "Сладость", "minty": "Мятный",
-    "egg": "Яйцо", "pumpking": "Тыквенный король", "turkey": "Индейка",
-    "bat": "Летучая мышь", "batwing": "Летучее крыло", "spider": "Паук",
-    "shark": "Акула", "dragon": "Дракон", "wolf": "Волк", "cat": "Кот",
-    "dog": "Пёс", "bunny": "Кролик", "bear": "Медведь", "fox": "Лис",
-    "pig": "Свин", "phoenix": "Феникс", "old glory": "Старая слава",
-    "seer": "Провидец", "tides": "Приливы", "waves": "Волны", "ocean": "Океан",
-    "flora": "Флора", "bloom": "Расцвет", "blossom": "Цветение",
-    "sakura": "Сакура", "ornament": "Украшение", "bauble": "Ёлочный шар",
-    "borealis": "Северное сияние", "australis": "Южное сияние",
-    "americ": "Америка", "america": "Америка", "amerilaser": "Америлазер",
-    "gold": "Золото", "golden": "Золотой", "silver": "Серебро",
-    "chroma": "Хрома", "c.": "Хрома", "godly": "Голди",
-    # --- Цвета ---
-    "red": "Красный", "blue": "Синий", "green": "Зелёный",
-    "purple": "Фиолетовый", "orange": "Оранжевый", "yellow": "Жёлтый",
-    "white": "Белый", "black": "Чёрный", "pink": "Розовый",
-    # --- Прочее / бренды ---
-    "traveler": "Путешественник", "traveler's": "Путешественника",
-    "travelers": "Путешественника", "heart": "Сердце", "prince": "Принц",
-    "cowboy": "Ковбой", "cotton candy": "Сахарная вата", "latte": "Латте",
-    "cavern": "Пещера", "beach": "Пляж", "broken": "Сломанный",
-    "splitter": "Разделитель", "harvest": "Урожай",
-}
-
-# Известные суффиксы-морфемы, по которым слитные английские слова
-# (без пробела) делятся на "тема" + "тип предмета", например:
-# "Ghostblade" -> "Ghost" + "blade", "Nightblade" -> "Night" + "blade".
-# Порядок важен: сначала длинные суффиксы, чтобы "raygun" не резался как
-# "ray" + "gun" там, где raygun уже есть отдельным словом.
-COMPOUND_SUFFIXES: list[str] = [
-    "battleaxe", "raygun", "handsaw", "logchopper",
-    "blade", "blaster", "shard", "cane", "beam", "wing", "gun",
-    "axe", "saw", "flake",
-]
-
-# Составные названия, которые русскоязычное MM2-комьюнити переводит целиком
-# одним словом, а не по частям (раздельный перевод корней дал бы другой,
-# не совпадающий с общепринятым результат).
-MERGED_COMPOUND_OVERRIDES: dict[str, str] = {
-    "icebreaker": "Ледокол",
-    "icecrusher": "Ледокрушитель",
-    "icepiercer": "Ледопронзатель",
-    "iceblaster": "Ледяной бластер",
-    "icebeam": "Ледяной луч",
-    "iceflake": "Ледяная снежинка",
-    "icewing": "Ледяное крыло",
+RU_NAMES: dict[str, str] = {
+    "nebula": "Туманность",
+    "traveler's gun": "Пистолет путешественника",
+    "travelers gun": "Пистолет путешественника",
+    "evergun": "Вечнозелёный пистолет",
+    "constellation": "Созвездие",
+    "evergreen": "Вечнозелёный",
+    "turkey": "Индейка",
+    "alienbeam": "Луч пришельца",
+    "vampire's gun": "Пистолет вампира",
+    "vampires gun": "Пистолет вампира",
     "darkshot": "Тёмный выстрел",
     "darksword": "Тёмный меч",
-    "darkbringer": "Несущий тьму",
-    "lightbringer": "Несущий свет",
-    "watergun": "Водный пистолет",
+    "raygun": "Лучемёт",
+    "blossom": "Цветение",
+    "sakura": "Сакура",
+    "sunrise": "Рассвет",
+    "bauble": "Ёлочный шар",
     "snowcannon": "Снежная пушка",
+    "sunset": "Закат",
+    "soul": "Душа",
+    "spirit": "Дух",
+    "rainbow gun": "Радужный пистолет",
+    "flora": "Флора",
+    "rainbow": "Радуга",
+    "bloom": "Расцвет",
+    "heart wand": "Сердечный жезл",
+    "ocean": "Океан",
+    "waves": "Волны",
     "xenoknife": "Ксенонож",
     "xenoshot": "Ксеновыстрел",
-    "alienbeam": "Луч пришельца",
+    "flowerwood gun": "Цветочный пистолет",
+    "blizzard": "Метель",
+    "flowerwood": "Цветочное дерево",
+    "snow dagger": "Снежный кинжал",
+    "snowstorm": "Снежная буря",
+    "watergun": "Водный пистолет",
+    "treat": "Сладость",
+    "sweet": "Конфета",
+    "borealis": "Северное сияние",
+    "australis": "Южное сияние",
+    "bat": "Летучая мышь",
+    "pearlshine": "Жемчужный блеск",
+    "pearl": "Жемчуг",
+    "candy": "Леденец",
+    "heartblade": "Клинок сердца",
+    "luger": "Люгер",
+    "red luger": "Красный люгер",
+    "green luger": "Зелёный люгер",
+    "ginger luger": "Имбирный люгер",
+    "makeshift": "Самодельный",
+    "phantom": "Фантом",
+    "spectre": "Призрак",
+    "candleflame": "Пламя свечи",
+    "darkbringer": "Несущий тьму",
+    "elderwood blade": "Клинок древнего дерева",
+    "elderwood revolver": "Револьвер древнего дерева",
+    "iceblaster": "Ледяной бластер",
+    "lightbringer": "Несущий свет",
+    "sugar": "Сахар",
+    "ornament": "Украшение",
+    "amerilaser": "Америлазер",
+    "laser": "Лазер",
     "hallowgun": "Хэллоу-пистолет",
-    "hallowscythe": "Коса Хэллоуина",
+    "icebeam": "Ледяной луч",
+    "nightblade": "Ночной клинок",
+    "shark": "Акула",
     "plasmabeam": "Плазменный луч",
-    "plasmablade": "Плазменное лезвие",
-    "bioblade": "Биолезвие",
-    "frostsaber": "Морозная сабля",
-    "gingerblade": "Имбирное лезвие",
-    "boneblade": "Костяное лезвие",
-    "ghostblade": "Лезвие призрака",
-    "nightblade": "Ночное лезвие",
-    "eggblade": "Лезвие-яйцо",
-    "cookieblade": "Лезвие-печенье",
+    "swirly gun": "Спиральный пистолет",
+    "battleaxe ii": "Боевой топор II",
+    "blaster": "Бластер",
+    "iceflake": "Ледяная снежинка",
+    "pixel": "Пиксель",
+    "plasmablade": "Плазменный клинок",
+    "gemstone": "Драгоценный камень",
+    "old glory": "Старая слава",
+    "slasher": "Потрошитель",
+    "vampire's edge": "Клинок вампира",
+    "vampires edge": "Клинок вампира",
     "cookiecane": "Печенье-трость",
+    "deathshard": "Осколок смерти",
     "eternalcane": "Вечная трость",
-    "lugercane": "Люгер-трость",
+    "gingerblade": "Имбирный клинок",
+    "gingermint": "Имбирная мята",
     "jinglegun": "Звенящий пистолет",
-    "evergun": "Вечнозелёный пистолет",
+    "lugercane": "Люгер-трость",
+    "minty": "Мятный",
+    "swirly blade": "Спиральный клинок",
+    "virtual": "Виртуальный",
+    "battleaxe": "Боевой топор",
+    "chill": "Холод",
+    "clockwork": "Заводной механизм",
+    "fang": "Клык",
+    "frostsaber": "Морозная сабля",
+    "heat": "Жар",
+    "spider": "Паук",
+    "tides": "Приливы",
+    "bioblade": "Биоклинок",
+    "eternal iii": "Вечный III",
+    "eternal iv": "Вечный IV",
+    "hallow's blade": "Клинок Хэллоуина",
+    "hallows blade": "Клинок Хэллоуина",
+    "hallow's edge": "Грань Хэллоуина",
+    "hallows edge": "Грань Хэллоуина",
+    "handsaw": "Ножовка",
+    "boneblade": "Костяной клинок",
+    "eternal": "Вечный",
+    "eternal ii": "Вечный II",
+    "frostbite": "Обморожение",
+    "ghostblade": "Клинок призрака",
+    "ice dragon": "Ледяной дракон",
+    "ice shard": "Ледяной осколок",
+    "prismatic": "Призматический",
+    "pumpking": "Тыквенный король",
+    "saw": "Пила",
+    "xmas": "Рождество",
+    "eggblade": "Клинок-яйцо",
+    "flames": "Пламя",
+    "snowflake": "Снежинка",
+    "winter's edge": "Зимняя грань",
+    "winters edge": "Зимняя грань",
+    "peppermint": "Мята перечная",
+    "cookieblade": "Клинок-печенье",
+    "blue seer": "Синий провидец",
+    "purple seer": "Фиолетовый провидец",
+    "red seer": "Красный провидец",
+    "seer": "Провидец",
+    "orange seer": "Оранжевый провидец",
+    "yellow seer": "Жёлтый провидец",
+    "chroma evergreen": "Хрома Вечнозелёный",
+    "chroma raygun": "Хрома Лучемёт",
+    "chroma sunrise": "Хрома Рассвет",
+    "chroma sunset": "Хрома Закат",
+    "chroma snow dagger": "Хрома Снежный кинжал",
+    "chroma darkbringer": "Хрома Несущий тьму",
+    "chroma lightbringer": "Хрома Несущий свет",
+    "chroma luger": "Хрома Люгер",
+    "chroma candleflame": "Хрома Пламя свечи",
+    "chroma laser": "Хрома Лазер",
+    "chroma elderwood blade": "Хрома Клинок древнего дерева",
+    "chroma swirly gun": "Хрома Спиральный пистолет",
+    "chroma deathshard": "Хрома Осколок смерти",
+    "chroma cookiecane": "Хрома Печенье-трость",
+    "chroma slasher": "Хрома Потрошитель",
+    "chroma fang": "Хрома Клык",
+    "chroma gemstone": "Хрома Драгоценный камень",
+    "chroma shark": "Хрома Акула",
+    "chroma heat": "Хрома Жар",
+    "chroma seer": "Хрома Провидец",
+    "chroma gingerblade": "Хрома Имбирный клинок",
+    "chroma tides": "Хрома Приливы",
+    "chroma saw": "Хрома Пила",
+    "chroma boneblade": "Хрома Костяной клинок",
+    "darkness": "Тьма",
+    "corrupt": "Порча",
+    "frost": "Мороз",
+    "midnight": "Полночь",
+    "crystal": "Кристалл",
+    "godly gun": "Голди пистолет",
+    "harvest moon": "Урожайная луна",
+    "golden gun": "Золотой пистолет",
+    "silver gun": "Серебряный пистолет",
+    "chroma": "Хрома",
+    "ice": "Лёд",
+    "fire": "Огонь",
+    "gold": "Золото",
+    "silver": "Серебро",
+    "shadow": "Тень",
+    "void": "Пустота",
+    "star": "Звезда",
+    "galaxy": "Галактика",
+    "comet": "Комета",
+    "meteor": "Метеор",
+    "aurora": "Аврора",
+    "eclipse": "Затмение",
+    "phoenix": "Феникс",
+    "dragon": "Дракон",
+    "wolf": "Волк",
+    "cat": "Кот",
+    "dog": "Пёс",
+    "bunny": "Кролик",
+    "bear": "Медведь",
+    "fox": "Лис",
+    "pig": "Свин",
 }
 
-
-def _split_compound_word(word: str) -> list[str]:
-    """Делит слитное английское слово на части по известным суффиксам,
-    например 'Ghostblade' -> ['Ghost', 'blade']. Если суффикс не найден,
-    возвращает слово как есть (одним элементом)."""
-    lower = word.lower()
-    for suffix in COMPOUND_SUFFIXES:
-        if lower.endswith(suffix) and len(lower) > len(suffix):
-            head = word[: len(word) - len(suffix)]
-            return [head, suffix]
-    return [word]
-
-
-def _normalize_apostrophe(text: str) -> str:
-    return text.replace("’", "'")
-
-
-def _translate_token(token: str) -> str:
-    """Ищет перевод слова в ROOT_TRANSLATIONS. Пробует как есть, без
-    завершающей пунктуации, и — для притяжательной формы вида "Vampire's" —
-    также базовую форму без 's/s', поскольку словарь хранит только
-    базовое слово (например "vampire"), а не каждую его форму."""
-    normalized = _normalize_apostrophe(token).lower().strip(".,()")
-    candidates = [normalized]
-    if normalized.endswith("'s"):
-        candidates.append(normalized[:-2])
-    elif normalized.endswith("s") and not normalized.endswith("'s"):
-        candidates.append(normalized[:-1])
-    candidates.append(normalized.replace("'", ""))
-    for key in candidates:
-        if key and key in ROOT_TRANSLATIONS:
-            return ROOT_TRANSLATIONS[key]
-    return token
-
+WORD_TRANSLATIONS: dict[str, str] = {
+    "chroma": "Хрома", "c.": "Хрома", "gun": "Пистолет", "blade": "Клинок",
+    "knife": "Нож", "sword": "Меч", "axe": "Топор", "edge": "Грань",
+    "shard": "Осколок", "fire": "Огонь", "ice": "Лёд", "gold": "Золото",
+    "silver": "Серебро", "red": "Красный", "blue": "Синий", "green": "Зелёный",
+    "purple": "Фиолетовый", "orange": "Оранжевый", "yellow": "Жёлтый",
+    "white": "Белый", "black": "Чёрный", "dark": "Тёмный", "light": "Светлый",
+    "snow": "Снег", "winter": "Зима", "summer": "Лето", "xmas": "Рождество",
+    "christmas": "Рождество", "hallow's": "Хэллоуин", "hallows": "Хэллоуин",
+    "valentine": "Валентин", "easter": "Пасха", "seer": "Провидец",
+}
 
 def auto_translate_ru(name_en: str) -> str:
-    """Полностью автоматический перевод английского названия предмета на
-    русский по корням/морфемам — без ручного словаря целых фраз."""
-    raw_words = name_en.split()
-    translated_parts: list[str] = []
-    i = 0
-    n = len(raw_words)
-
-    while i < n:
-        raw_word = raw_words[i]
-        stripped = raw_word.strip(".,()")
-
-        # Сначала пробуем словосочетание из ДВУХ слов подряд (например
-        # "Old Glory", "Ice Dragon"), если оно целиком есть в словаре —
-        # это позволяет переводить устойчивые двухсловные названия так,
-        # как их знает комьюнити, не разбивая по отдельным корням.
-        if i + 1 < n:
-            next_stripped = raw_words[i + 1].strip(".,()")
-            two_word_key = f"{_normalize_apostrophe(stripped).lower()} {_normalize_apostrophe(next_stripped).lower()}"
-            if two_word_key in MERGED_COMPOUND_OVERRIDES:
-                translated_parts.append(MERGED_COMPOUND_OVERRIDES[two_word_key])
-                i += 2
-                continue
-            if two_word_key in ROOT_TRANSLATIONS:
-                translated_parts.append(ROOT_TRANSLATIONS[two_word_key])
-                i += 2
-                continue
-
-        merged_key = _normalize_apostrophe(stripped).lower()
-        if merged_key in MERGED_COMPOUND_OVERRIDES:
-            translated_parts.append(MERGED_COMPOUND_OVERRIDES[merged_key])
-            i += 1
-            continue
-
-        direct = _translate_token(stripped)
-        if direct != stripped:
-            translated_parts.append(direct)
-            i += 1
-            continue
-
-        # Слово не нашлось целиком — пробуем разбить как слитный композит
-        # (например "Nightblade" -> "Night" + "blade").
-        pieces = _split_compound_word(stripped)
-        if len(pieces) > 1:
-            translated_parts.append(
-                " ".join(_translate_token(p) for p in pieces)
-            )
-        else:
-            # Совсем неизвестное слово — оставляем как в оригинале, чтобы
-            # не придумывать перевод от себя.
-            translated_parts.append(raw_word)
-        i += 1
-
-    return " ".join(translated_parts)
-
+    words = name_en.split()
+    result = []
+    for w in words:
+        key = w.lower().strip(".,'()")
+        result.append(WORD_TRANSLATIONS.get(key, w))
+    return " ".join(result)
 
 def get_ru_name(name_en: str) -> str:
     key = name_en.lower().strip()
-    if key in MERGED_COMPOUND_OVERRIDES:
-        return MERGED_COMPOUND_OVERRIDES[key]
+    if key in RU_NAMES:
+        return RU_NAMES[key]
     return auto_translate_ru(name_en)
 
 # --------------------------------------------------------------------------- #
@@ -440,31 +449,14 @@ def _parse_value_to_int(raw: str) -> Optional[int]:
     except ValueError:
         return None
 
-def fetch_category(slug: str, rarity_label: str) -> list[Item]:
+def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> list[Item]:
     target_url = f"{BASE_URL}/mm2/{slug}"
     api_url = f"https://api.scrapingant.com/v2/general?url={target_url}&x-api-key={SCRAPINGANT_API_KEY}&browser=true"
-
-    # Явно задаём короткий, минимальный набор заголовков и НЕ переиспользуем
-    # Session между категориями. Общая Session накапливает Set-Cookie от
-    # ScrapingAnt на каждый запрос, и после нескольких категорий суммарный
-    # объём заголовков/кук в исходящем запросе может превысить лимиты
-    # urllib3/сервера — именно это чаще всего стоит за "огромным количеством
-    # заголовков". Новый requests.get(...) на каждую категорию = чистое
-    # состояние без унаследованных cookie.
-    request_headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; MM2ValuesBot/1.0)",
-        "Accept": "application/json",
-        "Connection": "close",
-    }
 
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = requests.get(
-                api_url,
-                timeout=REQUEST_TIMEOUT,
-                headers=request_headers,
-            )
+            resp = session.get(api_url, timeout=REQUEST_TIMEOUT)
             if resp.status_code == 200:
                 break
             elif resp.status_code == 409:
@@ -498,42 +490,99 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
     items: list[Item] = []
     seen_names: set[str] = set()
 
-    for card in soup.find_all("div", class_="itemcolumn"):
-        head_tag = card.find("div", class_="itemhead")
-        btn_tag = card.find("button")
-        display_name = ""
-        if btn_tag and btn_tag.get("data-name"):
-            display_name = btn_tag.get("data-name").strip()
-        elif head_tag:
-            display_name = head_tag.get_text(strip=True)
-        if not display_name:
+    # Реальная разметка supremevalues.com — это таблица строк (tr), где в
+    # одной ячейке лежит <img alt="Имя предмета" src="...">, а в соседней —
+    # свободный текст вида:
+    #   Traveler's Gun
+    #   Value - 5,200 ... Ranged Value - [5,200 - 5,400]
+    #   Stability - Doing Well
+    #   Demand - 6  Rarity - 5
+    #   Origin - Hallows 2023 (Unboxed)
+    # Никаких классов itemcolumn/itemimage/itemvalue или data-* атрибутов
+    # на сайте нет — старый парсер их просто не находил, поэтому кэш
+    # наполнялся пустыми/N-A предметами. Вместо жёсткой привязки к тегам
+    # ищем по картинке (она однозначно определяет один предмет) и берём
+    # текст ближайшего общего блока-контейнера (обычно <tr> или <td>).
+    img_tags = soup.find_all("img", alt=True)
+
+    for img_tag in img_tags:
+        alt_name = (img_tag.get("alt") or "").strip()
+        if not alt_name:
             continue
+        # Служебные картинки (иконки стабильности, значки, шапки разделов)
+        # не являются предметами — пропускаем по типичным путям.
+        src_check = img_tag.get("src", "")
+        if "/media/stability/" in src_check or "/media/icons/" in src_check \
+                or "/media/headers/" in src_check or "experimental" in src_check \
+                or "badge" in src_check.lower():
+            continue
+
+        # Находим ближайший контейнер-строку, содержащий текст с "Value".
+        container = img_tag.find_parent("tr")
+        if container is None:
+            container = img_tag.find_parent("td")
+        if container is None:
+            container = img_tag.parent
+        # Поднимаемся вверх, пока не найдём блок, где есть слово "Value"
+        hops = 0
+        node = container
+        while node is not None and "Value" not in node.get_text() and hops < 4:
+            node = node.parent
+            hops += 1
+        if node is not None:
+            container = node
+
+        block_text = container.get_text(" ", strip=True) if container else ""
+        if not block_text or "Value" not in block_text:
+            continue
+
+        display_name = alt_name
         if display_name.lower() in seen_names:
             continue
-        seen_names.add(display_name.lower())
 
-        val_tag = card.find("b", class_="itemvalue")
-        value_raw = val_tag.get_text(strip=True) if val_tag else card.get("data-value", "N/A")
+        value_match = re.search(r"Value\s*-\s*([\d,]+|N/A)", block_text)
+        value_raw = value_match.group(1) if value_match else "N/A"
         value_int = _parse_value_to_int(value_raw)
         value_display = value_raw if value_int is None else f"{value_int:,}".replace(",", " ")
-        stability = card.get("data-stability", "Неизвестно")
-        img_tag = card.find("img", class_="itemimage")
+
+        ranged_match = re.search(r"Ranged Value\s*-\s*\[([^\]]+)\]", block_text)
+        ranged_value = ranged_match.group(1).strip() if ranged_match else None
+        if ranged_value and ranged_value.upper() == "N/A":
+            ranged_value = None
+
+        stability_match = re.search(
+            r"Stability\s*-\s*([A-Za-z' ]+?)(?=\s+Demand|\s+Rarity|\s+Origin|$)",
+            block_text,
+        )
+        stability = stability_match.group(1).strip() if stability_match else "Неизвестно"
+
+        origin_match = re.search(
+            r"Origin\s*-\s*(.+?)(?=\s+Last Change|$)", block_text
+        )
+        origin = origin_match.group(1).strip() if origin_match else ""
+
         image_url = ""
-        if img_tag and img_tag.get("src"):
-            src = img_tag["src"]
-            if src.startswith(".."):
-                src = src.replace("..", BASE_URL)
+        src = img_tag.get("src", "")
+        if src:
+            if src.startswith("//"):
+                image_url = "https:" + src
+            elif src.startswith("http://") or src.startswith("https://"):
+                image_url = src
+            elif src.startswith(".."):
+                image_url = src.replace("..", BASE_URL)
             elif src.startswith("/"):
-                src = BASE_URL + src
-            image_url = src
-        origin = card.get("data-event", "")
+                image_url = BASE_URL + src
+            else:
+                image_url = f"{BASE_URL}/{src.lstrip('/')}"
+
+        seen_names.add(display_name.lower())
         items.append(Item(
             name=display_name,
             category_slug=slug,
             rarity=rarity_label,
             value=value_int,
             value_display=value_display,
-            ranged_value=None,
+            ranged_value=ranged_value,
             stability=stability,
             image_url=image_url,
             origin=origin,
@@ -542,10 +591,14 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
 
 def fetch_all_items() -> list[Item]:
     all_items: list[Item] = []
+    session = requests.Session()
+    adapter = HeaderRichHTTPAdapter()
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
 
     for slug, rarity_label in CATEGORIES:
         try:
-            cat_items = fetch_category(slug, rarity_label)
+            cat_items = fetch_category(session, slug, rarity_label)
             logger.info("Категория '%s': найдено %d предметов", slug, len(cat_items))
             all_items.extend(cat_items)
             time.sleep(2.0)
@@ -817,13 +870,27 @@ def get_font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
     except OSError:
         return ImageFont.load_default()
 
+_IMAGE_REQUEST_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    "Referer": BASE_URL + "/",
+}
+
 def download_image(url: str) -> Optional[Image.Image]:
     if not url:
         return None
     try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
+        resp = requests.get(url, timeout=10, headers=_IMAGE_REQUEST_HEADERS)
+        content_type = resp.headers.get("Content-Type", "")
+        if resp.status_code == 200 and content_type.startswith("image/"):
             return Image.open(io.BytesIO(resp.content)).convert("RGBA")
+        logger.warning(
+            "Изображение %s вернуло статус %d / content-type '%s'",
+            url, resp.status_code, content_type,
+        )
     except Exception as e:
         logger.warning("Не удалось скачать изображение %s: %s", url, e)
     return None
@@ -987,6 +1054,10 @@ def format_item_caption(item: Item, lang: str) -> str:
         "",
         f"<i>{t(lang, 'value_label')}:</i>",
         f"Supreme: <b>{item.value_display}</b>",
+    ]
+    if item.ranged_value:
+        lines.append(f"Range: <b>{html.escape(item.ranged_value)}</b>")
+    lines += [
         "",
         f"{t(lang, 'status_label')}: <b>{html.escape(item.rarity)}</b>",
         f"{t(lang, 'stability_label')}: <b>{html.escape(stability_text)}</b>",
@@ -1029,19 +1100,12 @@ async def cmd_setrefresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     error = context.error
     if isinstance(error, Conflict):
-        logger.error(
-            "Обнаружен конфликт (Conflict): другой экземпляр бота активен "
-            "(или уже идёт перезапуск). Ничего не делаем — polling сам "
-            "переподключится, либо это сделает внешний retry-цикл в main()."
-        )
-        # ВАЖНО: раньше здесь вызывался app.stop()/app.start()/start_polling()
-        # прямо из error-хендлера. Если Application к этому моменту уже не
-        # запущен (например, конфликт пришёл во время остановки), app.stop()
-        # бросает RuntimeError("This Application is not running!"), и это
-        # исключение вылетает уже из самого обработчика ошибок, ломая цикл
-        # ещё раз. PTB и так автоматически переподключает polling после
-        # Conflict, а окончательное восстановление после серии конфликтов
-        # обеспечивает retry-цикл вокруг run_polling() в main().
+        logger.error("Обнаружен конфликт (Conflict): другой экземпляр бота активен. Перезапуск...")
+        app = context.application
+        await app.stop()
+        await asyncio.sleep(5)
+        await app.start()
+        await app.updater.start_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
     elif isinstance(error, NetworkError):
         logger.error("Сетевая ошибка: %s", error)
     elif isinstance(error, TimedOut):
@@ -1070,6 +1134,10 @@ def reset_webhook_and_cleanup():
 # --------------------------------------------------------------------------- #
 
 def main() -> None:
+    # Запускаем HTTP-сервер сразу, чтобы Render как можно раньше увидел
+    # открытый порт и не считал деплой неудачным по таймауту.
+    start_health_server(PORT)
+
     logger.info("Очистка вебхука и pending updates...")
     reset_webhook_and_cleanup()
 
