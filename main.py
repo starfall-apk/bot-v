@@ -1,22 +1,7 @@
 """
-MM2 Values Telegram Bot (v2.3)
-===============================
-Ищет ценность скинов/оружия Murder Mystery 2 (Roblox) по названию на русском
-или английском (с опечатками и вариациями), парсит supremevalues.com через
-ScrapingAnt API. Отправляет стилизованное изображение с предметом, названием
-и ценой.
-
-Исправления и улучшения:
-- Загружаются только необходимые редкости (godlies, chromas, legendaries,
-  ancients, vintages, evos, rares, uncommons, commons).
-- Автоматическое обновление раз в 7 дней, администратор может изменить
-  период командой /setrefresh (только для ID 1420898868).
-- Атомарная замена кэша – при обновлении старые данные остаются доступными.
-- Исправлена ошибка t() got multiple values for argument 'lang'.
-- Улучшена обработка ошибок ScrapingAnt (включая "got more than 100 headers").
-- **Гарантированное исправление ошибки >100 заголовков**: увеличен лимит
-  заголовков в urllib3 через кастомный HTTPAdapter.
-- Защита от повторного запуска (сброс вебхука, автоматический перезапуск при Conflict).
+MM2 Values Telegram Bot (v2.3.1)
+=================================
+Исправление совместимости с urllib3 >= 2.0: параметр maxheaders заменён на max_header_size.
 """
 
 from __future__ import annotations
@@ -39,6 +24,7 @@ from typing import Optional
 
 import requests
 from requests.adapters import HTTPAdapter
+from urllib3 import __version__ as urllib3_version
 from urllib3.poolmanager import PoolManager
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz, process
@@ -62,13 +48,17 @@ from telegram.ext import (
 from telegram.error import Conflict, NetworkError, TimedOut
 
 # --------------------------------------------------------------------------- #
-# Класс для увеличения лимита заголовков в urllib3
+# Адаптер с увеличенным лимитом заголовков, совместимый с urllib3 1.x и 2.x
 # --------------------------------------------------------------------------- #
 
 class HeaderRichHTTPAdapter(HTTPAdapter):
-    """HTTPAdapter с увеличенным лимитом заголовков (>100)."""
     def init_poolmanager(self, *args, **kwargs):
-        kwargs['maxheaders'] = 200   # ставим запас в 200 заголовков
+        # urllib3 >= 2.0 использует max_header_size (байты), иначе maxheaders (количество)
+        major, minor, *_ = map(int, urllib3_version.split('.'))
+        if (major, minor) >= (2, 0):
+            kwargs['max_header_size'] = 32768   # 32 КБ — более чем достаточно
+        else:
+            kwargs['maxheaders'] = 200
         return super().init_poolmanager(*args, **kwargs)
 
 # --------------------------------------------------------------------------- #
@@ -87,7 +77,6 @@ DB_PATH = os.environ.get("DB_PATH", "mm2bot_settings.db")
 
 BASE_URL = "https://supremevalues.com"
 
-# Только нужные редкости
 CATEGORIES: list[tuple[str, str]] = [
     ("godlies", "Godly"),
     ("chromas", "Chroma"),
@@ -190,7 +179,6 @@ def generate_query_variants(raw_query: str) -> list[str]:
         variants.add(v)
     return list(variants)
 
-# Расширенный словарь русских названий (полный, как раньше)
 RU_NAMES: dict[str, str] = {
     "nebula": "Туманность",
     "traveler's gun": "Пистолет путешественника",
@@ -404,7 +392,7 @@ def get_ru_name(name_en: str) -> str:
     return auto_translate_ru(name_en)
 
 # --------------------------------------------------------------------------- #
-# Парсинг с использованием сессии с HeaderRichHTTPAdapter
+# Парсинг
 # --------------------------------------------------------------------------- #
 
 STABILITY_MAP_RU = {
@@ -428,7 +416,6 @@ def _parse_value_to_int(raw: str) -> Optional[int]:
         return None
 
 def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> list[Item]:
-    """Скачивает и парсит одну категорию. Сессия уже настроена с HeaderRichHTTPAdapter."""
     target_url = f"{BASE_URL}/mm2/{slug}"
     api_url = f"https://api.scrapingant.com/v2/general?url={target_url}&x-api-key={SCRAPINGANT_API_KEY}&browser=true"
 
@@ -513,7 +500,6 @@ def fetch_category(session: requests.Session, slug: str, rarity_label: str) -> l
 
 def fetch_all_items() -> list[Item]:
     all_items: list[Item] = []
-    # Создаём сессию и монтируем адаптер с увеличенным лимитом заголовков
     session = requests.Session()
     adapter = HeaderRichHTTPAdapter()
     session.mount('https://', adapter)
@@ -530,7 +516,7 @@ def fetch_all_items() -> list[Item]:
     return all_items
 
 # --------------------------------------------------------------------------- #
-# Кэш данных (атомарное обновление)
+# Кэш
 # --------------------------------------------------------------------------- #
 
 class ValuesCache:
@@ -618,7 +604,7 @@ class ValuesCache:
 cache = ValuesCache()
 
 # --------------------------------------------------------------------------- #
-# Настройки (язык, интервал обновления) — SQLite
+# Настройки
 # --------------------------------------------------------------------------- #
 
 DEFAULT_LANG = "ru"
@@ -1019,7 +1005,6 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.error("Ошибка при обработке апдейта: %s", error, exc_info=error)
 
 def reset_webhook_and_cleanup():
-    """Удаляет вебхук и сбрасывает pending updates."""
     import requests as req
     try:
         resp = req.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
@@ -1036,7 +1021,7 @@ def reset_webhook_and_cleanup():
         logger.error(f"Ошибка при очистке вебхука: {e}")
 
 # --------------------------------------------------------------------------- #
-# Точка входа
+# Главный блок
 # --------------------------------------------------------------------------- #
 
 def main() -> None:
@@ -1045,7 +1030,6 @@ def main() -> None:
 
     init_db()
 
-    # Первичная загрузка кэша в фоне
     threading.Thread(target=cache.refresh, daemon=True).start()
 
     interval_days = get_refresh_interval_days()
