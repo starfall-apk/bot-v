@@ -1720,3 +1720,41 @@ def create_item_image(item: Item, lang: str) -> io.BytesIO:
     canvas.convert("RGB").save(bio, format="JPEG", quality=92)
     bio.seek(0)
     return bio
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, format, *args):
+        # Отключаем лишний спам логов от health-чеков
+        return
+
+def run_health_check_server():
+    server_address = ("0.0.0.0", PORT)
+    httpd = ThreadingHTTPServer(server_address, HealthCheckHandler)
+    logger.info("Health check HTTP-сервер запущен на порту %d", PORT)
+    httpd.serve_forever()
+
+if __name__ == "__main__":
+    # 1. Инициализируем БД и скачиваем шрифты
+    init_db()
+    ensure_fonts_downloaded()
+
+    # 2. Запускаем кэширование в фоновом потоке
+    threading.Thread(target=cache.refresh, daemon=True).start()
+
+    # 3. Запускаем HTTP-сервер для Render в отдельном потоке
+    threading.Thread(target=run_health_check_server, daemon=True).start()
+
+    # 4. Настраиваем и запускаем Telegram бота
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    # Добавление хэндлеров...
+    # application.add_handler(CommandHandler("start", start_command))
+    # ...
+
+    logger.info("Запуск Telegram бота (polling)...")
+    application.run_polling(drop_pending_updates=True)
