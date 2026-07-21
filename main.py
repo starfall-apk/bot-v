@@ -1,8 +1,11 @@
 """
-MM2 Values Telegram Bot (v2.6.2)
+MM2 Values Telegram Bot (v2.6.3)
 =================================
-- Изображения генерируются по правильному пути: /media/mm2{slug}/{name}.png
-- Устранена возможность пустых подписей и пропажи текста на карточке.
+- Исправлена загрузка изображений: добавлены заголовки User-Agent/Referer,
+  проверка Content-Type, логирование ошибок.
+- Изображение берётся из src карточки, если оно валидно; иначе генерируется
+  по шаблону /media/mm2{slug}/{name}.png.
+- Текст на карточке выводится всегда (даже при ошибке шрифта).
 """
 
 from __future__ import annotations
@@ -454,15 +457,13 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
 
         stability = card.get("data-stability", "Unknown")
 
-        # Правильный путь к изображению: /media/mm2{slug}/{name}.png
-        safe_name = re.sub(r'[^\w\s-]', '', display_name).strip().replace(' ', '_')
-        image_url = f"{BASE_URL}/media/mm2{slug}/{safe_name}.png"
-
-        # Попробуем взять src из img (если он валидный, используем его, иначе оставляем сгенерированный)
+        # --- Изображение ---
+        image_url = ""
         img_tag = card.find("img", class_="itemimage")
         if img_tag and img_tag.get("src"):
             src = img_tag["src"].strip()
-            if not src.endswith("N_A.png") and "N_A" not in src.upper():
+            # Игнорируем N_A
+            if "N_A" not in src.upper():
                 if src.startswith(".."):
                     src = src.replace("..", BASE_URL)
                 elif src.startswith("/"):
@@ -470,6 +471,12 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
                 elif not src.startswith("http"):
                     src = BASE_URL + "/" + src.lstrip("/")
                 image_url = src
+
+        # Если URL не получен или всё ещё содержит N_A — генерируем свой
+        if not image_url or "N_A" in image_url.upper():
+            safe_name = re.sub(r'[^\w\s-]', '', display_name).strip().replace(' ', '_')
+            image_url = f"{BASE_URL}/media/mm2{slug}/{safe_name}.png"
+            logger.info("Сгенерирован URL изображения для '%s': %s", display_name, image_url)
 
         origin = card.get("data-event", "")
 
@@ -766,18 +773,33 @@ def get_font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
     try:
         return ImageFont.truetype(path, size)
     except OSError:
+        logger.warning("Не удалось загрузить шрифт %s, использую стандартный.", path)
         return ImageFont.load_default()
 
 def download_image(url: str) -> Optional[Image.Image]:
     if not url:
         return None
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Referer": "https://supremevalues.com/",
+    }
     try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            return Image.open(io.BytesIO(resp.content)).convert("RGBA")
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            logger.warning("Загрузка изображения %s вернула статус %d", url, resp.status_code)
+            return None
+        content_type = resp.headers.get("Content-Type", "")
+        if not content_type.startswith("image/"):
+            logger.warning("Неверный Content-Type для %s: %s", url, content_type)
+            return None
+        # Проверим длину (меньше 100 байт — вероятно, не изображение)
+        if len(resp.content) < 100:
+            logger.warning("Слишком маленький ответ для %s (%d байт)", url, len(resp.content))
+            return None
+        return Image.open(io.BytesIO(resp.content)).convert("RGBA")
     except Exception as e:
         logger.warning("Не удалось скачать изображение %s: %s", url, e)
-    return None
+        return None
 
 def create_item_image(item: Item, lang: str) -> io.BytesIO:
     width, height = 800, 600
@@ -819,12 +841,12 @@ def create_item_image(item: Item, lang: str) -> io.BytesIO:
     value_font = get_font(36, bold=True)
     detail_font = get_font(22, bold=False)
 
-    name_en = item.name if item.name else "???"
+    name_en = item.name or "???"
     name_ru = get_ru_name(item.name) if (lang == "ru" and item.name) else ""
     title = f"{name_en} / {name_ru}" if name_ru and name_ru != name_en else name_en
 
-    value_str = item.value_display if item.value_display else "N/A"
-    rarity = item.rarity if item.rarity else "???"
+    value_str = item.value_display or "N/A"
+    rarity = item.rarity or "???"
     stability = localized_stability(lang, item.stability) if item.stability else "???"
 
     fill_white = (255, 255, 255, 255)
