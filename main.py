@@ -1,13 +1,8 @@
 """
-MM2 Values Telegram Bot (v2.6.1)
+MM2 Values Telegram Bot (v2.6.2)
 =================================
-Исправления:
-- Исправлен парсинг image_url: если изображение отсутствует или ведёт на N_A,
-  URL генерируется по шаблону /media/{slug}/{name}.png.
-- Добавлена проверка на N/A имя предмета (игнорируем такие карточки).
-- Улучшено извлечение display_name (дополнительно проверяется data-name карточки).
-- Устранена проблема с относительными путями без начального слеша.
-- Добавлено логирование сгенерированных URL.
+- Изображения генерируются по правильному пути: /media/mm2{slug}/{name}.png
+- Устранена возможность пустых подписей и пропажи текста на карточке.
 """
 
 from __future__ import annotations
@@ -429,7 +424,6 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
     seen_names: set[str] = set()
 
     for card in soup.find_all("div", class_="itemcolumn"):
-        # --- Имя предмета ---
         btn_tag = card.find("button")
         display_name = ""
         if btn_tag and btn_tag.get("data-name"):
@@ -439,7 +433,6 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
             if head_tag:
                 display_name = head_tag.get_text(strip=True)
 
-        # Дополнительно пробуем data-name самой карточки
         if not display_name:
             display_name = card.get("data-name", "").strip()
 
@@ -450,7 +443,6 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
             continue
         seen_names.add(display_name.lower())
 
-        # --- Значение ---
         val_tag = card.find("b", class_="itemvalue")
         if val_tag:
             value_raw = val_tag.get_text(strip=True)
@@ -460,27 +452,24 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
         value_int = _parse_value_to_int(value_raw)
         value_display = value_raw if value_int is None else f"{value_int:,}".replace(",", " ")
 
-        # --- Стабильность ---
         stability = card.get("data-stability", "Unknown")
 
-        # --- Изображение ---
-        image_url = ""
+        # Правильный путь к изображению: /media/mm2{slug}/{name}.png
+        safe_name = re.sub(r'[^\w\s-]', '', display_name).strip().replace(' ', '_')
+        image_url = f"{BASE_URL}/media/mm2{slug}/{safe_name}.png"
+
+        # Попробуем взять src из img (если он валидный, используем его, иначе оставляем сгенерированный)
         img_tag = card.find("img", class_="itemimage")
         if img_tag and img_tag.get("src"):
             src = img_tag["src"].strip()
-            if src.startswith(".."):
-                src = src.replace("..", BASE_URL)
-            elif src.startswith("/"):
-                src = BASE_URL + src
-            elif not src.startswith("http"):
-                src = BASE_URL + "/" + src.lstrip("/")
-            image_url = src
-
-        # Если URL отсутствует или содержит N_A — генерируем свой
-        if not image_url or "N_A" in image_url.upper():
-            safe_name = re.sub(r'[^\w\s-]', '', display_name).strip().replace(' ', '_')
-            image_url = f"{BASE_URL}/media/{slug}/{safe_name}.png"
-            logger.info("Сгенерирован URL изображения для '%s': %s", display_name, image_url)
+            if not src.endswith("N_A.png") and "N_A" not in src.upper():
+                if src.startswith(".."):
+                    src = src.replace("..", BASE_URL)
+                elif src.startswith("/"):
+                    src = BASE_URL + src
+                elif not src.startswith("http"):
+                    src = BASE_URL + "/" + src.lstrip("/")
+                image_url = src
 
         origin = card.get("data-event", "")
 
@@ -830,13 +819,13 @@ def create_item_image(item: Item, lang: str) -> io.BytesIO:
     value_font = get_font(36, bold=True)
     detail_font = get_font(22, bold=False)
 
-    name_en = item.name
-    name_ru = get_ru_name(item.name) if lang == "ru" else ""
-    title = f"{name_en} / {name_ru}" if (name_ru and name_ru != name_en) else name_en
+    name_en = item.name if item.name else "???"
+    name_ru = get_ru_name(item.name) if (lang == "ru" and item.name) else ""
+    title = f"{name_en} / {name_ru}" if name_ru and name_ru != name_en else name_en
 
-    value_str = item.value_display
-    rarity = item.rarity
-    stability = localized_stability(lang, item.stability)
+    value_str = item.value_display if item.value_display else "N/A"
+    rarity = item.rarity if item.rarity else "???"
+    stability = localized_stability(lang, item.stability) if item.stability else "???"
 
     fill_white = (255, 255, 255, 255)
     fill_light = (220, 220, 220, 255)
@@ -937,20 +926,22 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
 
 def format_item_caption(item: Item, lang: str) -> str:
-    name_en = html.escape(item.name)
+    name_en = html.escape(item.name) if item.name else "???"
     if lang == "ru":
-        name_ru = html.escape(get_ru_name(item.name))
+        name_ru = html.escape(get_ru_name(item.name)) if item.name else "???"
         title_line = f"<b>{name_en}</b> ({name_ru})"
     else:
         title_line = f"<b>{name_en}</b>"
-    stability_text = localized_stability(lang, item.stability)
+    stability_text = localized_stability(lang, item.stability) if item.stability else "???"
+    value_disp = item.value_display if item.value_display else "N/A"
+    rarity = html.escape(item.rarity) if item.rarity else "???"
     lines = [
         title_line,
         "",
         f"<i>{t(lang, 'value_label')}:</i>",
-        f"Supreme: <b>{item.value_display}</b>",
+        f"Supreme: <b>{value_disp}</b>",
         "",
-        f"{t(lang, 'status_label')}: <b>{html.escape(item.rarity)}</b>",
+        f"{t(lang, 'status_label')}: <b>{rarity}</b>",
         f"{t(lang, 'stability_label')}: <b>{html.escape(stability_text)}</b>",
     ]
     return "\n".join(lines)
