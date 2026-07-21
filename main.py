@@ -1,31 +1,13 @@
 """
-MM2 Values Telegram Bot (v2.6.0)
+MM2 Values Telegram Bot (v2.6.1)
 =================================
-Изменения в этой версии:
-- ИСПРАВЛЕНО: бот запускается на Render как Web Service, но не открывал
-  порт — теперь в отдельном потоке поднимается минимальный HTTP-сервер на
-  $PORT (или 10000, если переменная не задана), который отвечает на любой
-  запрос "OK". Это удовлетворяет требованию Render о том, что Web Service
-  обязан слушать порт, и убирает ошибку "No open ports detected".
-- ОТКАТ: в промежуточной версии парсинг карточек предмета был переписан на
-  поиск "от картинки" (по паттерну src="/media/mm2<категория>/Имя.png"), но
-  это сломало поиск — карточки перестали находиться. Логика парсинга
-  разметки (селекторы div.itemcolumn / itemhead / itemvalue / itemimage и
-  data-атрибуты карточки) возвращена к исходному, проверенно рабочему
-  варианту без изменений. Обновлена только обвязка вокруг запроса к
-  ScrapingAnt (retry/заголовки, см. ниже) — сам парсинг HTML не трогали.
-- Убран кастомный HTTPAdapter, вызывавший TypeError на urllib3 2.x
-  (PoolKey.__new__() got an unexpected keyword argument 'key_max_header_size').
-- Каждая категория теперь запрашивается новой сессией/новыми заголовками,
-  чтобы избежать накопления Cookie/заголовков между запросами через ScrapingAnt
-  ("огромное количество заголовков").
-- Обработчик ошибок Conflict больше не падает, если Application уже остановлен.
-- Из списка автообновляемых категорий убрана 'evos' (у эво нет ценности в валюте).
-- Автоматический перевод названий на русский: не полагается на ручной словарь
-  устоявшихся фраз, а транслитерирует/переводит слова так, как их обычно
-  переводит сам Roblox (например Blade -> Лезвие, а не Клинок), с учётом
-  словосочетаний вроде "ледокол арбалет"/"ледокол топор".
-- ДОБАВЛЕНО: Расширенное логирование и сохранение HTML-ответов для дебага парсера.
+Исправления:
+- Исправлен парсинг image_url: если изображение отсутствует или ведёт на N_A,
+  URL генерируется по шаблону /media/{slug}/{name}.png.
+- Добавлена проверка на N/A имя предмета (игнорируем такие карточки).
+- Улучшено извлечение display_name (дополнительно проверяется data-name карточки).
+- Устранена проблема с относительными путями без начального слеша.
+- Добавлено логирование сгенерированных URL.
 """
 
 from __future__ import annotations
@@ -82,13 +64,6 @@ if not BOT_TOKEN:
 SCRAPINGANT_API_KEY = os.environ.get("SCRAPINGANT_API_KEY", "2e2075e51d5e4236a474c52c2434d15a")
 DB_PATH = os.environ.get("DB_PATH", "mm2bot_settings.db")
 
-# Render (и большинство других PaaS) запускают "Web Service" и проверяют,
-# что приложение слушает TCP-порт из переменной окружения PORT — иначе
-# сервис считается нерабочим ("No open ports detected") и перезапускается.
-# Этот бот работает через long polling и сам по себе никакой HTTP-сервер не
-# поднимает, поэтому ниже (см. start_health_check_server) добавлен
-# отдельный лёгкий HTTP-сервер только для того, чтобы занять этот порт и
-# отвечать на health-check запросы Render.
 PORT = int(os.environ.get("PORT", "10000"))
 
 BASE_URL = "https://supremevalues.com"
@@ -99,8 +74,6 @@ CATEGORIES: list[tuple[str, str]] = [
     ("legendaries", "Legendary"),
     ("ancients", "Ancient"),
     ("vintages", "Vintage"),
-    # "evos" намеренно исключены: у Evo-предметов нет ценности в валюте MM2,
-    # поэтому их не нужно парсить/обновлять вместе с остальными категориями.
     ("rares", "Rare"),
     ("uncommons", "Uncommon"),
     ("commons", "Common"),
@@ -197,11 +170,10 @@ def generate_query_variants(raw_query: str) -> list[str]:
     return list(variants)
 
 # --------------------------------------------------------------------------- #
-# Автоматический перевод названий (в стиле локализации Roblox/MM2-комьюнити)
+# Автоматический перевод названий
 # --------------------------------------------------------------------------- #
 
 ROOT_TRANSLATIONS: dict[str, str] = {
-    # --- Оружие / типы предметов ---
     "gun": "Пистолет", "revolver": "Револьвер", "blaster": "Бластер",
     "beam": "Луч", "cannon": "Пушка", "shot": "Выстрел", "raygun": "Лучемёт",
     "blade": "Лезвие", "knife": "Нож", "sword": "Меч", "dagger": "Кинжал",
@@ -213,7 +185,6 @@ ROOT_TRANSLATIONS: dict[str, str] = {
     "breaker": "Ледокол", "piercer": "Пронзатель", "slasher": "Потрошитель",
     "phaser": "Фазер", "laser": "Лазер", "harvester": "Жнец",
     "wing": "Крыло", "beam gun": "Лучевой пистолет",
-    # --- Стихии / темы ---
     "ice": "Лёд", "iceflake": "Ледяная снежинка", "icewing": "Ледяное крыло",
     "fire": "Огонь", "flame": "Пламя", "flames": "Пламя", "heat": "Жар",
     "frost": "Мороз", "frostbite": "Обморожение", "snow": "Снег",
@@ -255,11 +226,9 @@ ROOT_TRANSLATIONS: dict[str, str] = {
     "americ": "Америка", "america": "Америка", "amerilaser": "Америлазер",
     "gold": "Золото", "golden": "Золотой", "silver": "Серебро",
     "chroma": "Хрома", "c.": "Хрома", "godly": "Голди",
-    # --- Цвета ---
     "red": "Красный", "blue": "Синий", "green": "Зелёный",
     "purple": "Фиолетовый", "orange": "Оранжевый", "yellow": "Жёлтый",
     "white": "Белый", "black": "Чёрный", "pink": "Розовый",
-    # --- Прочее / бренды ---
     "traveler": "Путешественник", "traveler's": "Путешественника",
     "travelers": "Путешественника", "heart": "Сердце", "prince": "Принц",
     "cowboy": "Ковбой", "cotton candy": "Сахарная вата", "latte": "Латте",
@@ -427,15 +396,6 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
                 headers=request_headers,
             )
             if resp.status_code == 200:
-                # --- ДЕБАГ: Проверяем наличие карточек и сохраняем ответ ---
-                if "itemcolumn" not in resp.text:
-                    logger.error(f"В ответе нет 'itemcolumn' для категории {slug}! Сохраняем в файл debug_error_{slug}.html")
-                    try:
-                        with open(f"debug_error_{slug}.html", "w", encoding="utf-8") as f:
-                            f.write(resp.text)
-                    except Exception as e:
-                        logger.error(f"Не удалось сохранить файл для {slug}: {e}")
-                # -----------------------------------------------------------
                 break
             elif resp.status_code == 409:
                 logger.warning("ScrapingAnt 409 для '%s', попытка %d/%d", slug, attempt, MAX_RETRIES)
@@ -469,22 +429,28 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
     seen_names: set[str] = set()
 
     for card in soup.find_all("div", class_="itemcolumn"):
-        head_tag = card.find("div", class_="itemhead")
+        # --- Имя предмета ---
         btn_tag = card.find("button")
-
         display_name = ""
         if btn_tag and btn_tag.get("data-name"):
             display_name = btn_tag.get("data-name").strip()
-        elif head_tag:
-            display_name = head_tag.get_text(strip=True)
+        else:
+            head_tag = card.find("div", class_="itemhead")
+            if head_tag:
+                display_name = head_tag.get_text(strip=True)
 
+        # Дополнительно пробуем data-name самой карточки
         if not display_name:
+            display_name = card.get("data-name", "").strip()
+
+        if not display_name or display_name.lower() == "n/a":
             continue
 
         if display_name.lower() in seen_names:
             continue
         seen_names.add(display_name.lower())
 
+        # --- Значение ---
         val_tag = card.find("b", class_="itemvalue")
         if val_tag:
             value_raw = val_tag.get_text(strip=True)
@@ -494,23 +460,31 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
         value_int = _parse_value_to_int(value_raw)
         value_display = value_raw if value_int is None else f"{value_int:,}".replace(",", " ")
 
-        stability = card.get("data-stability", "Неизвестно")
+        # --- Стабильность ---
+        stability = card.get("data-stability", "Unknown")
 
-        img_tag = card.find("img", class_="itemimage")
+        # --- Изображение ---
         image_url = ""
+        img_tag = card.find("img", class_="itemimage")
         if img_tag and img_tag.get("src"):
-            src = img_tag["src"]
+            src = img_tag["src"].strip()
             if src.startswith(".."):
                 src = src.replace("..", BASE_URL)
             elif src.startswith("/"):
                 src = BASE_URL + src
+            elif not src.startswith("http"):
+                src = BASE_URL + "/" + src.lstrip("/")
             image_url = src
+
+        # Если URL отсутствует или содержит N_A — генерируем свой
+        if not image_url or "N_A" in image_url.upper():
+            safe_name = re.sub(r'[^\w\s-]', '', display_name).strip().replace(' ', '_')
+            image_url = f"{BASE_URL}/media/{slug}/{safe_name}.png"
+            logger.info("Сгенерирован URL изображения для '%s': %s", display_name, image_url)
 
         origin = card.get("data-event", "")
 
-        # --- ДЕБАГ: Логируем каждый найденный предмет ---
-        logger.info(f"DEBUG [{slug}]: Найдено -> Имя: '{display_name}', Value: '{value_display}'")
-        # ------------------------------------------------
+        logger.info("DEBUG [%s]: Найдено -> Имя: '%s', Value: '%s'", slug, display_name, value_display)
 
         items.append(
             Item(
@@ -1050,7 +1024,7 @@ def reset_webhook_and_cleanup():
 # --------------------------------------------------------------------------- #
 
 class _HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         body = b"OK"
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -1058,7 +1032,7 @@ class _HealthCheckHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, format: str, *args) -> None:  # noqa: A002
+    def log_message(self, format: str, *args) -> None:
         pass
 
 def start_health_check_server(port: int) -> ThreadingHTTPServer:
