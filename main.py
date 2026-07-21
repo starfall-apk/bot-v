@@ -1,11 +1,10 @@
 """
-MM2 Values Telegram Bot (v2.6.3)
+MM2 Values Telegram Bot (v2.6.4)
 =================================
-- Исправлена загрузка изображений: добавлены заголовки User-Agent/Referer,
-  проверка Content-Type, логирование ошибок.
-- Изображение берётся из src карточки, если оно валидно; иначе генерируется
-  по шаблону /media/mm2{slug}/{name}.png.
-- Текст на карточке выводится всегда (даже при ошибке шрифта).
+- Исправлена отрисовка текста на холсте (пересоздание ImageDraw после композита).
+- Надёжная загрузка изображений: HEAD-проверка, правильный Referer, fallback на URL из src.
+- Изображение предмета увеличено и смещено вниз.
+- Всегда выводится информативная подпись под фото.
 """
 
 from __future__ import annotations
@@ -457,12 +456,11 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
 
         stability = card.get("data-stability", "Unknown")
 
-        # --- Изображение ---
+        # Изображение: берём из src, если нет N_A, иначе генерируем
         image_url = ""
         img_tag = card.find("img", class_="itemimage")
         if img_tag and img_tag.get("src"):
             src = img_tag["src"].strip()
-            # Игнорируем N_A
             if "N_A" not in src.upper():
                 if src.startswith(".."):
                     src = src.replace("..", BASE_URL)
@@ -472,11 +470,9 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
                     src = BASE_URL + "/" + src.lstrip("/")
                 image_url = src
 
-        # Если URL не получен или всё ещё содержит N_A — генерируем свой
         if not image_url or "N_A" in image_url.upper():
             safe_name = re.sub(r'[^\w\s-]', '', display_name).strip().replace(' ', '_')
             image_url = f"{BASE_URL}/media/mm2{slug}/{safe_name}.png"
-            logger.info("Сгенерирован URL изображения для '%s': %s", display_name, image_url)
 
         origin = card.get("data-event", "")
 
@@ -782,7 +778,22 @@ def download_image(url: str) -> Optional[Image.Image]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
         "Referer": "https://supremevalues.com/",
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
     }
+    # Проверим HEAD
+    try:
+        head_resp = requests.head(url, headers=headers, timeout=10)
+        if head_resp.status_code != 200:
+            logger.warning("HEAD для %s вернул %d", url, head_resp.status_code)
+            # Попробуем альтернативный URL с заменой пробелов на подчеркивания (на всякий случай)
+            alt_url = url.replace(" ", "_")
+            if alt_url != url:
+                head_resp = requests.head(alt_url, headers=headers, timeout=10)
+                if head_resp.status_code == 200:
+                    url = alt_url
+    except Exception:
+        pass
+
     try:
         resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code != 200:
@@ -792,7 +803,6 @@ def download_image(url: str) -> Optional[Image.Image]:
         if not content_type.startswith("image/"):
             logger.warning("Неверный Content-Type для %s: %s", url, content_type)
             return None
-        # Проверим длину (меньше 100 байт — вероятно, не изображение)
         if len(resp.content) < 100:
             logger.warning("Слишком маленький ответ для %s (%d байт)", url, len(resp.content))
             return None
@@ -808,22 +818,25 @@ def create_item_image(item: Item, lang: str) -> io.BytesIO:
     img = Image.new("RGBA", (width, height), bg_color1)
     draw = ImageDraw.Draw(img)
 
+    # Градиентный фон
     for y in range(height):
         r = int(bg_color1[0] + (bg_color2[0] - bg_color1[0]) * y / height)
         g = int(bg_color1[1] + (bg_color2[1] - bg_color1[1]) * y / height)
         b = int(bg_color1[2] + (bg_color2[2] - bg_color1[2]) * y / height)
         draw.line([(0, y), (width, y)], fill=(r, g, b))
 
+    # Полупрозрачная плашка внизу
     overlay = Image.new("RGBA", (width, height), (255, 255, 255, 0))
     overlay_draw = ImageDraw.Draw(overlay)
     overlay_draw.rectangle([(20, 400), (width - 20, 580)], fill=(0, 0, 0, 160))
     img = Image.alpha_composite(img, overlay)
 
+    # Изображение предмета
     item_img = None
     if item.image_url:
         item_img = download_image(item.image_url)
     if item_img:
-        max_size = 280
+        max_size = 320   # увеличенный размер
         ratio = min(max_size / item_img.width, max_size / item_img.height, 1.0)
         new_w = int(item_img.width * ratio)
         new_h = int(item_img.height * ratio)
@@ -834,9 +847,13 @@ def create_item_image(item: Item, lang: str) -> io.BytesIO:
         draw_stub.text((60, 50), "?", fill=(200, 200, 200), font=get_font(100))
 
     item_x = (width - item_img.width) // 2
-    item_y = 150 - item_img.height // 2
+    item_y = 210 - item_img.height // 2   # опустили ниже
     img.paste(item_img, (item_x, item_y), item_img)
 
+    # ---- ВАЖНО: пересоздаём объект ImageDraw после всех вставок ----
+    draw = ImageDraw.Draw(img)
+
+    # Текст
     title_font = get_font(38, bold=True)
     value_font = get_font(36, bold=True)
     detail_font = get_font(22, bold=False)
@@ -853,12 +870,15 @@ def create_item_image(item: Item, lang: str) -> io.BytesIO:
     fill_light = (220, 220, 220, 255)
     fill_yellow = (255, 215, 0, 255)
 
+    # Тень + текст заголовка
     draw.text((width//2 + 2, 22), title, anchor="ma", font=title_font, fill=(0,0,0,120))
     draw.text((width//2, 20), title, anchor="ma", font=title_font, fill=fill_white)
 
+    # Значение
     draw.text((width//2 + 2, 432), f"Supreme: {value_str}", anchor="ma", font=value_font, fill=(0,0,0,120))
     draw.text((width//2, 430), f"Supreme: {value_str}", anchor="ma", font=value_font, fill=fill_yellow)
 
+    # Редкость и стабильность
     draw.text((width//2 + 1, 491), f"{rarity}  ·  {stability}", anchor="ma", font=detail_font, fill=(0,0,0,100))
     draw.text((width//2, 490), f"{rarity}  ·  {stability}", anchor="ma", font=detail_font, fill=fill_light)
 
@@ -936,15 +956,18 @@ async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     item, _ = results[0]
 
+    # Формируем полную подпись
+    caption = format_item_caption(item, lang)
+
     try:
         img_bio = create_item_image(item, lang)
         await update.message.reply_photo(
             photo=img_bio,
-            caption=f"🔍 Запрос: {html.escape(query_text)}",
+            caption=caption,
+            parse_mode=ParseMode.HTML,
         )
     except Exception as e:
         logger.exception("Ошибка при создании изображения: %s", e)
-        caption = format_item_caption(item, lang)
         await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
 
 def format_item_caption(item: Item, lang: str) -> str:
