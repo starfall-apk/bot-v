@@ -1,23 +1,3 @@
-"""
-MM2 Values Telegram Bot (v3.0.0) — "Liquid Glass" Edition
-===========================================================
-Изменения относительно предыдущей версии:
-- Полностью переработанный дизайн карточек предметов: Glassmorphism
-  (liquid glass), градиентные фоны, мягкие тени, скруглённые панели,
-  качественная типографика на шрифте Inter (с авто-загрузкой шрифта).
-- Надёжный поиск изображений предметов: приоритет отдаётся реальному
-  src из HTML (там уже лежат официальные короткие имена файлов вида
-  CEvergreen.png / Snowflake.png), плюс большой набор эвристик и
-  запасных вариантов имени файла на случай отсутствия src.
-- Автоматический перенос длинных названий на несколько строк, чтобы
-  текст никогда не вылезал за пределы изображения.
-- Command /filters — гибкая система фильтров (диапазон цены, редкость,
-  стабильность) с инлайн-кнопками, применяется и к ручному вводу,
-  и к команде /list.
-- Command /list — постраничный каталог всех предметов (дорогие -> дешёвые)
-  с инлайн-кнопками, учитывает активные фильтры.
-"""
-
 from __future__ import annotations
 
 import html
@@ -39,7 +19,7 @@ from typing import Optional
 
 import requests
 from bs4 import BeautifulSoup
-from rapidfuzz import fuzz, process
+from rapidfuzz import fuzz
 from apscheduler.schedulers.background import BackgroundScheduler
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
@@ -156,8 +136,13 @@ def strip_accents(text: str) -> str:
 
 def normalize_text(text: str) -> str:
     text = strip_accents(text.lower())
-    text = re.sub(r"[^a-zа-я0-9]+", "", text)
-    return text
+    text = re.sub(r"[^a-zа-я0-9]+", " ", text)
+    return " ".join(text.split())
+
+def token_sorted_text(text: str) -> str:
+    """Возвращает отсортированные по алфавиту слова без знаков препинания."""
+    words = sorted(re.findall(r"[a-zа-я0-9]+", strip_accents(text.lower())))
+    return " ".join(words)
 
 def transliterate_ru_to_lat(text: str) -> str:
     text = text.lower()
@@ -184,7 +169,7 @@ def generate_query_variants(raw_query: str) -> list[str]:
     return list(variants)
 
 # --------------------------------------------------------------------------- #
-# Автоматический перевод названий
+# Автоматический перевод названий и база псевдонимов
 # --------------------------------------------------------------------------- #
 
 ROOT_TRANSLATIONS: dict[str, str] = {
@@ -199,7 +184,7 @@ ROOT_TRANSLATIONS: dict[str, str] = {
     "breaker": "Ледокол", "piercer": "Пронзатель", "slasher": "Потрошитель",
     "phaser": "Фазер", "laser": "Лазер", "harvester": "Жнец",
     "wing": "Крыло", "beam gun": "Лучевой пистолет",
-    "ice": "Лёд", "iceflake": "Ледяная снежинка", "icewing": "Ледяное крыло",
+    "ice": "Лёд", "iceflake": "Ледяная снежинка", "icewing": "Ледокрыло",
     "fire": "Огонь", "flame": "Пламя", "flames": "Пламя", "heat": "Жар",
     "frost": "Мороз", "frostbite": "Обморожение", "snow": "Снег",
     "snowflake": "Снежинка", "snowstorm": "Снежная буря", "blizzard": "Метель",
@@ -257,13 +242,13 @@ COMPOUND_SUFFIXES: list[str] = [
 ]
 
 MERGED_COMPOUND_OVERRIDES: dict[str, str] = {
+    "icewing": "Ледокрыло",
     "icebreaker": "Ледокол",
     "icecrusher": "Ледокрушитель",
     "icepiercer": "Ледопронзатель",
     "iceblaster": "Ледяной бластер",
     "icebeam": "Ледяной луч",
     "iceflake": "Ледяная снежинка",
-    "icewing": "Ледяное крыло",
     "darkshot": "Тёмный выстрел",
     "darksword": "Тёмный меч",
     "darkbringer": "Несущий тьму",
@@ -290,6 +275,23 @@ MERGED_COMPOUND_OVERRIDES: dict[str, str] = {
     "lugercane": "Люгер-трость",
     "jinglegun": "Звенящий пистолет",
     "evergun": "Вечнозелёный пистолет",
+    "traveler's gun": "Пистолет путешественника",
+    "traveler's axe": "Топор путешественника",
+}
+
+# Популярные сленговые / дополнительные русские имена для улучшения поиска
+ITEM_ALIASES: dict[str, list[str]] = {
+    "icewing": ["ледокрыло", "ледяное крыло", "айсвинг"],
+    "icebreaker": ["ледокол", "айсбрекер"],
+    "icepiercer": ["ледопронзатель", "айспирсер"],
+    "chroma traveler's gun": ["хрома пистолет путешественника", "хрома тревелерс ган", "хрома путешественника пистолет"],
+    "traveler's gun": ["пистолет путешественника", "тревелер ган", "путешественника пистолет"],
+    "elderwood scythe": ["коса элдервуд", "элдервуд коса"],
+    "candleflame": ["пламя свечи", "кэндлфлейм"],
+    "harvester": ["жнец", "харвестер"],
+    "batwing": ["летучее крыло", "батвинг", "крыло летучей мыши"],
+    "makeshift": ["самоделка", "самодельный"],
+    "corrupt": ["коррупт", "порча"],
 }
 
 def _split_compound_word(word: str) -> list[str]:
@@ -384,7 +386,6 @@ STABILITY_MAP_RU = {
     "improving": "Улучшается",
 }
 
-# Канонический порядок фильтра "Стабильность" + эмодзи для UI.
 STABILITY_FILTER_OPTIONS: list[tuple[str, str, str]] = [
     ("stable", "Стабилен", "🟢"),
     ("doing well", "Растёт в цене", "📈"),
@@ -405,7 +406,6 @@ def _parse_value_to_int(raw: str) -> Optional[int]:
         return None
 
 def _normalize_image_src(src: str) -> str:
-    """Приводит относительный/сырой src из HTML к абсолютному URL."""
     src = src.strip()
     if not src:
         return ""
@@ -420,36 +420,13 @@ def _normalize_image_src(src: str) -> str:
         return BASE_URL + src
     return BASE_URL + "/" + src.lstrip("/")
 
-# Слова, которые сайт обычно отбрасывает при генерации коротких кодов
-# изображений (артикли, служебные слова).
 _IMG_STOPWORDS = {"the", "a", "an", "of"}
-
 _BRACKET_TAG_RE = re.compile(r"\s*[\[\(][^\]\)]*[\]\)]\s*")
 
 def _strip_name_tags(name: str) -> str:
-    """Убирает хвостовые пометки вида [XMAS2018], (Knife) из названия."""
     return _BRACKET_TAG_RE.sub(" ", name).strip()
 
 def guess_image_filenames(display_name: str) -> list[str]:
-    """
-    Строит список правдоподобных вариантов имени файла изображения на
-    основе одних только эвристик (используется как РЕЗЕРВ, когда
-    реальный src из HTML недоступен или ведёт на несуществующий файл).
-
-    supremevalues.com сокращает длинные имена по неформальным правилам:
-        Chroma Evergreen              -> CEvergreen.png
-        Chroma Traveler's Gun         -> CTG.png
-        Snowflake (Knife) [XMAS2018]  -> Snowflake.png
-        Chroma Snow Dagger            -> CDagger.png
-        Chroma Vampire's Gun          -> CVG.png
-
-    Общая идея: "Chroma"/"C." в начале почти всегда схлопывается в "C",
-    скобочные пометки вида (Knife), [XMAS2018] отбрасываются целиком,
-    а из оставшихся слов берётся либо последнее слово целиком, либо
-    аббревиатура по первым буквам. Однозначного правила нет, поэтому
-    генерируется НЕСКОЛЬКО кандидатов, которые затем перебираются по
-    очереди при скачивании.
-    """
     clean = _strip_name_tags(display_name)
     clean = clean.replace("’", "'")
 
@@ -484,23 +461,23 @@ def guess_image_filenames(display_name: str) -> list[str]:
     first_word = plain_words[0] if plain_words else ""
     last_word = plain_words[-1] if plain_words else ""
 
-    add(prefix + joined_nospace)                      # CEvergreen / CSnowDagger
-    add(prefix + last_word)                            # CDagger / CBaub
-    add(prefix + first_word)                            # CSnow
+    add(prefix + joined_nospace)
+    add(prefix + last_word)
+    add(prefix + first_word)
     if len(plain_words) >= 2:
         initials = "".join(w[0].upper() for w in plain_words if w)
-        add(prefix + initials)                          # CTG / CVG / CConst
+        add(prefix + initials)
     if plain_words:
         for cut in (6, 5, 4, 3):
             if len(plain_words[0]) > cut:
-                add(prefix + plain_words[0][:cut])       # CConst / CSnowst
-    add(joined_nospace)                                 # без префикса вообще
+                add(prefix + plain_words[0][:cut])
+    add(joined_nospace)
     add(last_word)
     add(first_word)
     safe_name = re.sub(r"[^\w\s-]", "", clean).strip().replace(" ", "_")
     add(safe_name)
     add(safe_name.replace("_", ""))
-    add("".join(w.capitalize() for w in plain_words))    # PascalCase
+    add("".join(w.capitalize() for w in plain_words))
 
     return [c for c in candidates if c]
 
@@ -601,16 +578,7 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
             if m:
                 stability = m.group(1).strip()
 
-        # ---------------------------------------------------------------- #
-        # Извлечение изображения (по убыванию приоритета):
-        #  1. Реальный src <img> из карточки — сайт-сгенерированный
-        #     короткий путь (например CEvergreen.png), почти всегда верен.
-        #  2. Эвристически построенные имена файлов как резервные
-        #     кандидаты — перебираются при скачивании, если первый
-        #     вариант не загрузится.
-        # ---------------------------------------------------------------- #
         image_candidates: list[str] = []
-
         img_tag = card.find("img", class_="itemimage") or card.find("img")
         if img_tag:
             for attr in ("src", "data-src", "data-lazy-src"):
@@ -665,27 +633,48 @@ def fetch_all_items() -> list[Item]:
     return all_items
 
 # --------------------------------------------------------------------------- #
-# Кэш
+# Структура поиска и Кэш
 # --------------------------------------------------------------------------- #
+
+@dataclass
+class SearchEntry:
+    key_norm: str
+    key_sorted: str
+    item_idx: int
 
 class ValuesCache:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._items: list[Item] = []
-        self._search_index: list[tuple[str, int]] = []
+        self._search_index: list[SearchEntry] = []
         self.last_updated: float = 0.0
         self.last_error: Optional[str] = None
 
-    def _build_search_index(self, items: list[Item]) -> list[tuple[str, int]]:
-        index = []
+    def _build_search_index(self, items: list[Item]) -> list[SearchEntry]:
+        index: list[SearchEntry] = []
         for idx, item in enumerate(items):
-            en_key = item.search_key
-            if en_key:
-                index.append((en_key, idx))
+            keys_to_add: set[str] = set()
+
+            # 1. Оригинальное название (EN)
+            keys_to_add.add(item.name)
+
+            # 2. Переведенное название (RU)
             ru_name = get_ru_name(item.name)
-            ru_key = normalize_text(ru_name)
-            if ru_key and ru_key != en_key:
-                index.append((ru_key, idx))
+            if ru_name:
+                keys_to_add.add(ru_name)
+
+            # 3. Ручные алиасы и синонимы
+            item_key_lower = item.name.lower().strip()
+            if item_key_lower in ITEM_ALIASES:
+                for alias in ITEM_ALIASES[item_key_lower]:
+                    keys_to_add.add(alias)
+
+            for key in keys_to_add:
+                k_norm = normalize_text(key)
+                k_sorted = token_sorted_text(key)
+                if k_norm:
+                    index.append(SearchEntry(key_norm=k_norm, key_sorted=k_sorted, item_idx=idx))
+
         return index
 
     def refresh(self) -> None:
@@ -730,28 +719,42 @@ class ValuesCache:
             if not allowed_idx:
                 return []
 
-        choices = [key for key, _ in index]
         best_by_idx: dict[int, float] = {}
 
         for variant in variants:
-            for key, idx in index:
-                if allowed_idx is not None and idx not in allowed_idx:
+            v_norm = normalize_text(variant)
+            v_sorted = token_sorted_text(variant)
+            if not v_norm:
+                continue
+
+            for entry in index:
+                if allowed_idx is not None and entry.item_idx not in allowed_idx:
                     continue
-                if key == variant:
-                    best_by_idx[idx] = 100.0
-            results = process.extract(variant, choices, scorer=fuzz.WRatio, limit=limit * 6)
-            for matched_key, score, pos in results:
-                idx = index[pos][1]
-                if allowed_idx is not None and idx not in allowed_idx:
+
+                # 1. Точное совпадение строки или отсортированного порядка слов
+                if v_norm == entry.key_norm or v_sorted == entry.key_sorted:
+                    best_by_idx[entry.item_idx] = 100.0
                     continue
-                if score > best_by_idx.get(idx, -1):
-                    best_by_idx[idx] = score
+
+                # 2. Нечёткое сравнение токенов
+                s1 = fuzz.token_sort_ratio(v_norm, entry.key_norm)
+                s2 = fuzz.token_set_ratio(v_norm, entry.key_norm)
+                s3 = fuzz.ratio(v_sorted, entry.key_sorted)
+                score = max(s1, s2, s3)
+
+                # Штрафуем разницу в длине, чтобы короткие запросы типа "лед" не перебивали "ледокрыло"
+                len_diff = abs(len(v_norm) - len(entry.key_norm))
+                if len_diff > 3 and score < 95.0:
+                    score = max(0.0, score - len_diff * 3.0)
+
+                if score > best_by_idx.get(entry.item_idx, -1):
+                    best_by_idx[entry.item_idx] = float(score)
 
         if not best_by_idx:
             return []
 
         ranked = sorted(best_by_idx.items(), key=lambda kv: kv[1], reverse=True)
-        THRESHOLD = 62.0
+        THRESHOLD = 58.0
         result: list[tuple[Item, float]] = []
         for idx, score in ranked:
             if score < THRESHOLD:
@@ -762,8 +765,6 @@ class ValuesCache:
         return result
 
     def all_items(self, filters: Optional["ItemFilters"] = None) -> list[Item]:
-        """Все предметы от самых дорогих к самым дешёвым, с учётом фильтров.
-        Предметы без числовой цены — в конце списка."""
         with self._lock:
             items = list(self._items)
         if filters is not None and not filters.is_empty:
@@ -942,7 +943,7 @@ def reset_user_filters(user_id: int) -> None:
     set_user_filters(user_id, ItemFilters())
 
 # --------------------------------------------------------------------------- #
-# Локализация редкости/стабильности
+# Локализация
 # --------------------------------------------------------------------------- #
 
 RARITY_RU_LABELS = {
@@ -982,8 +983,8 @@ TEXTS["ru"].update({
     "start": (
         "👋 <b>Привет!</b> Я бот-оценщик ценности предметов Murder Mystery 2.\n\n"
         "✏️ Просто напиши название предмета на русском или английском "
-        "(опечатки не страшны) — например: <i>Nebula</i>, <i>Туманность</i> "
-        "или даже <i>тумпннлсть</i>.\n\n"
+        "(опечатки и порядок слов не страшны) — например: <i>Хрома пистолет путешественника</i>, "
+        "<i>Ледокрыло</i> или <i>Nebula</i>.\n\n"
         "📋 <b>Команды:</b>\n"
         "🌐 /settings — язык интерфейса\n"
         "🎚 /filters — настроить фильтры поиска\n"
@@ -996,20 +997,20 @@ TEXTS["ru"].update({
         "🌐 /settings — сменить язык интерфейса\n"
         "🎚 /filters — настроить фильтры (цена, редкость, стабильность)\n"
         "📜 /list — список всех предметов (дорогие → дешёвые)\n"
-        "📊 /status — статус базы данных (когда обновлялась)"
+        "📊 /status — статус базы данных"
     ),
     "settings_title": "🌐 <b>Выберите язык интерфейса</b>",
     "settings_saved": "✅ Язык сохранён: <b>{lang_name}</b>",
     "not_found": (
         "😕 Ничего не найдено по запросу «{query}».\n"
-        "✏️ Проверь написание или попробуй английское название предмета.\n"
+        "✏️ Проверь написание или попробуй другое название предмета.\n"
         "🎚 Возможно, стоит проверить активные /filters."
     ),
     "searching": "🔎 Ищу...",
-    "value_label": "💰 Примерная стоимость",
-    "status_label": "🏷 Категория",
-    "stability_label": "📈 Стабильность",
-    "origin_label": "🎁 Событие",
+    "value_label": "Примерная стоимость",
+    "status_label": "Категория",
+    "stability_label": "Стабильность",
+    "origin_label": "Событие",
     "unknown_stability": "Неизвестно",
     "cache_empty": "⏳ База данных ещё загружается, попробуй через минуту.",
     "status_report": (
@@ -1060,8 +1061,8 @@ TEXTS["ru"].update({
 TEXTS["en"].update({
     "start": (
         "👋 <b>Hi!</b> I'm a Murder Mystery 2 item value checker bot.\n\n"
-        "✏️ Just type an item name in English or Russian (typos are fine) — "
-        "for example: <i>Nebula</i>, <i>Icewing</i>.\n\n"
+        "✏️ Just type an item name in English or Russian — "
+        "for example: <i>Chroma Traveler's Gun</i>, <i>Icewing</i>.\n\n"
         "📋 <b>Commands:</b>\n"
         "🌐 /settings — interface language\n"
         "🎚 /filters — configure search filters\n"
@@ -1072,27 +1073,24 @@ TEXTS["en"].update({
         "ℹ️ Type an MM2 item name — I'll find its value.\n\n"
         "📋 <b>Commands:</b>\n"
         "🌐 /settings — change interface language\n"
-        "🎚 /filters — configure filters (price, rarity, stability)\n"
-        "📜 /list — list of all items (expensive → cheap)\n"
-        "📊 /status — database status (last update time)"
+        "🎚 /filters — configure filters\n"
+        "📜 /list — list of all items\n"
+        "📊 /status — database status"
     ),
     "settings_title": "🌐 <b>Choose interface language</b>",
     "settings_saved": "✅ Language saved: <b>{lang_name}</b>",
     "not_found": (
         "😕 Nothing found for «{query}».\n"
-        "✏️ Check the spelling or try the item's other-language name.\n"
+        "✏️ Check the spelling or try another query.\n"
         "🎚 You may also want to check your active /filters."
     ),
     "searching": "🔎 Searching...",
-    "value_label": "💰 Estimated value",
-    "status_label": "🏷 Category",
-    "stability_label": "📈 Stability",
-    "origin_label": "🎁 Origin",
+    "value_label": "Estimated Value",
+    "status_label": "Category",
+    "stability_label": "Stability",
+    "origin_label": "Origin",
     "unknown_stability": "Unknown",
     "cache_empty": "⏳ Database is still loading, please try again in a minute.",
-})
-
-TEXTS["en"].update({
     "status_report": (
         "📊 Items in database: <b>{count}</b>\n"
         "🕒 Last update: <b>{last_update}</b>\n"
@@ -1111,9 +1109,6 @@ TEXTS["en"].update({
     "admin_refresh_updated": "✅ Refresh interval set to {days} days.",
     "admin_refresh_invalid": "❌ Please enter an integer from 1 to 90.",
     "admin_only": "⛔ This command is for the administrator only.",
-})
-
-TEXTS["en"].update({
     "filters_title": "🎚 <b>Search filters</b>\n\nAdjust the parameters and press \"Apply\".",
     "filters_btn_min": "💵 Currency (from): {value}",
     "filters_btn_max": "💰 Currency (to): {value}",
@@ -1123,18 +1118,18 @@ TEXTS["en"].update({
     "filters_btn_reset": "♻️ Reset",
     "filters_unlimited": "∞ unlimited",
     "filters_all": "all",
-    "filters_ask_min": "✏️ Enter the <b>minimum</b> price as a number (e.g. 1000):",
-    "filters_ask_max": "✏️ Enter the <b>maximum</b> price as a number, or -1 for \"unlimited\":",
-    "filters_invalid_number": "❌ That doesn't look like a valid number. Try again:",
-    "filters_invalid_range": "❌ Minimum can't be greater than maximum. Try again:",
-    "filters_invalid_negative": "❌ Value can't be negative (except -1 for \"unlimited\"). Try again:",
+    "filters_ask_min": "✏️ Enter minimum price as a number:",
+    "filters_ask_max": "✏️ Enter maximum price as a number, or -1 for unlimited:",
+    "filters_invalid_number": "❌ Invalid number. Try again:",
+    "filters_invalid_range": "❌ Minimum can't be greater than maximum:",
+    "filters_invalid_negative": "❌ Value can't be negative:",
     "filters_saved": "✅ Value saved",
     "filters_applied": "✅ Filters applied!",
     "filters_rarity_title": "🏷 <b>Choose rarity</b>",
     "filters_stability_title": "📈 <b>Choose stability</b>",
     "filters_option_all": "✅ All",
-    "list_title": "📜 <b>Item catalog</b> (expensive → cheap)",
-    "list_empty": "😕 Nothing matches your filters. Check /filters.",
+    "list_title": "📜 <b>Item catalog</b>",
+    "list_empty": "😕 Nothing matches your filters.",
     "list_nav_page": "📄 {page}/{total}",
 })
 
@@ -1144,37 +1139,25 @@ def t(lang: str, key: str, **kwargs) -> str:
     return template.format(**kwargs) if kwargs else template
 
 # --------------------------------------------------------------------------- #
-# Шрифты (Inter, с автозагрузкой + запасным вариантом)
+# Шрифты
 # --------------------------------------------------------------------------- #
 
 FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 os.makedirs(FONTS_DIR, exist_ok=True)
 
-# Официальный репозиторий Google Fonts — стабильный публичный источник.
 _INTER_SOURCES = {
     "Inter-Regular.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/static/Inter-Regular.ttf",
-    "Inter-Medium.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/static/Inter-Medium.ttf",
-    "Inter-SemiBold.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/static/Inter-SemiBold.ttf",
     "Inter-Bold.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/static/Inter-Bold.ttf",
-    "Inter-ExtraBold.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/static/Inter-ExtraBold.ttf",
-    "Inter-Black.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/static/Inter-Black.ttf",
 }
 
 _FALLBACK_FONT_MAP = {
     "Inter-Regular.ttf": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "Inter-Medium.ttf": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    "Inter-SemiBold.ttf": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "Inter-Bold.ttf": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "Inter-ExtraBold.ttf": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "Inter-Black.ttf": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
 }
 
 _font_cache: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
-_fonts_ready = threading.Event()
 
 def ensure_fonts_downloaded() -> None:
-    """Скачивает шрифты Inter один раз при старте бота. При любой ошибке
-    сети просто оставляет системный DejaVu — рендер не сломается."""
     for filename, url in _INTER_SOURCES.items():
         dest = os.path.join(FONTS_DIR, filename)
         if os.path.exists(dest) and os.path.getsize(dest) > 10_000:
@@ -1184,72 +1167,40 @@ def ensure_fonts_downloaded() -> None:
             if resp.status_code == 200 and len(resp.content) > 10_000:
                 with open(dest, "wb") as f:
                     f.write(resp.content)
-                logger.info("Шрифт %s загружен (%d байт)", filename, len(resp.content))
-            else:
-                logger.warning("Не удалось скачать шрифт %s: HTTP %s", filename, resp.status_code)
         except Exception as e:
             logger.warning("Ошибка загрузки шрифта %s: %s", filename, e)
-    _fonts_ready.set()
-
-def _font_path(weight_file: str) -> str:
-    local_path = os.path.join(FONTS_DIR, weight_file)
-    if os.path.exists(local_path) and os.path.getsize(local_path) > 10_000:
-        return local_path
-    return _FALLBACK_FONT_MAP.get(weight_file, _FALLBACK_FONT_MAP["Inter-Regular.ttf"])
 
 def get_font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
-    weight_file = {
-        "regular": "Inter-Regular.ttf",
-        "medium": "Inter-Medium.ttf",
-        "semibold": "Inter-SemiBold.ttf",
-        "bold": "Inter-Bold.ttf",
-        "extrabold": "Inter-ExtraBold.ttf",
-        "black": "Inter-Black.ttf",
-    }.get(weight, "Inter-Regular.ttf")
-
+    weight_file = "Inter-Bold.ttf" if weight in ("bold", "semibold", "extrabold") else "Inter-Regular.ttf"
     cache_key = (weight_file, size)
     if cache_key in _font_cache:
         return _font_cache[cache_key]
 
-    path = _font_path(weight_file)
+    local_path = os.path.join(FONTS_DIR, weight_file)
+    path = local_path if os.path.exists(local_path) else _FALLBACK_FONT_MAP.get(weight_file, "")
     try:
         font = ImageFont.truetype(path, size)
-    except OSError:
-        logger.warning("Не удалось загрузить шрифт %s, использую стандартный.", path)
+    except Exception:
         font = ImageFont.load_default()
     _font_cache[cache_key] = font
     return font
 
 # --------------------------------------------------------------------------- #
-# Загрузка изображений предметов
+# Скачивание картинок
 # --------------------------------------------------------------------------- #
 
 _IMG_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36",
     "Referer": "https://supremevalues.com/",
-    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
 }
-
-# Небольшой процессный кэш "URL -> сработал ли" чтобы не пробивать одни и
-# те же битые ссылки повторно в рамках сессии.
 _url_status_cache: dict[str, bool] = {}
 
 def _try_download_single(url: str) -> Optional[Image.Image]:
-    if not url:
-        return None
-    if _url_status_cache.get(url) is False:
+    if not url or _url_status_cache.get(url) is False:
         return None
     try:
         resp = requests.get(url, headers=_IMG_HEADERS, timeout=12)
-        if resp.status_code != 200:
-            _url_status_cache[url] = False
-            return None
-        content_type = resp.headers.get("Content-Type", "")
-        if not content_type.startswith("image/") and len(resp.content) < 100:
-            _url_status_cache[url] = False
-            return None
-        if len(resp.content) < 80:
+        if resp.status_code != 200 or len(resp.content) < 80:
             _url_status_cache[url] = False
             return None
         img = Image.open(io.BytesIO(resp.content))
@@ -1261,27 +1212,8 @@ def _try_download_single(url: str) -> Optional[Image.Image]:
         return None
 
 def download_item_image(item: Item) -> Optional[Image.Image]:
-    """
-    Перебирает все кандидаты URL изображения для предмета (реальный src
-    из HTML первым, затем эвристические варианты коротких имён файлов) и
-    возвращает первое успешно загруженное изображение. При успехе
-    запоминает рабочий URL в БД, чтобы при следующем обновлении кэша он
-    сразу оказался первым кандидатом.
-    """
     candidates = list(item.image_url_candidates) or ([item.image_url] if item.image_url else [])
-    if not candidates:
-        return None
-
-    # Также пробуем вариант с подчёркиваниями вместо пробелов для
-    # каждого кандидата — на случай экзотических путей.
-    extra: list[str] = []
-    for c in candidates:
-        alt = c.replace(" ", "_")
-        if alt != c and alt not in candidates and alt not in extra:
-            extra.append(alt)
-    all_candidates = candidates + extra
-
-    for url in all_candidates:
+    for url in candidates:
         img = _try_download_single(url)
         if img is not None:
             if url != item.image_url:
@@ -1291,13 +1223,11 @@ def download_item_image(item: Item) -> Optional[Image.Image]:
     return None
 
 # --------------------------------------------------------------------------- #
-# Генерация изображения карточки (Glassmorphism / Liquid Glass)
+# Генерация изображения и подписи
 # --------------------------------------------------------------------------- #
 
-CARD_W, CARD_H = 1000, 720
+CARD_W, CARD_H = 800, 800
 
-# Палитры фона по редкости — мягкие насыщенные градиенты, характерные
-# именно для этой категории предметов.
 RARITY_GRADIENTS: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
     "godlies":     ((255, 196, 64), (120, 40, 140)),
     "chromas":     ((255, 90, 205), (70, 60, 255)),
@@ -1320,21 +1250,6 @@ RARITY_ACCENT: dict[str, tuple[int, int, int]] = {
     "uncommons":   (100, 230, 160),
     "commons":     (210, 215, 225),
 }
-DEFAULT_ACCENT = (150, 150, 220)
-
-STABILITY_COLORS: dict[str, tuple[int, int, int]] = {
-    "stable": (110, 231, 165),
-    "doing well": (110, 200, 255),
-    "improving": (110, 200, 255),
-    "fluctuating": (255, 196, 92),
-    "underpaid for": (255, 140, 210),
-    "unstable": (255, 120, 120),
-    "hoarded": (200, 160, 255),
-    "rising": (110, 231, 165),
-    "dropping": (255, 120, 120),
-    "receding": (255, 160, 120),
-}
-DEFAULT_STABILITY_COLOR = (200, 205, 220)
 
 def _lerp_color(c1: tuple[int, int, int], c2: tuple[int, int, int], t_: float) -> tuple[int, int, int]:
     return (
@@ -1344,12 +1259,9 @@ def _lerp_color(c1: tuple[int, int, int], c2: tuple[int, int, int], t_: float) -
     )
 
 def _make_mesh_background(width: int, height: int, slug: str) -> Image.Image:
-    """Мягкий диагональный градиент + два расплывчатых цветных пятна —
-    имитация фонового "mesh gradient", характерного для glassmorphism-UI."""
     c1, c2 = RARITY_GRADIENTS.get(slug, DEFAULT_GRADIENT)
     base = Image.new("RGB", (width, height), c1)
     px = base.load()
-    diag = (width ** 2 + height ** 2) ** 0.5
     for y in range(height):
         for x in range(0, width, 2):
             t_ = ((x * 0.6 + y * 0.4)) / (width * 0.6 + height * 0.4)
@@ -1359,241 +1271,42 @@ def _make_mesh_background(width: int, height: int, slug: str) -> Image.Image:
                 px[x + 1, y] = col
     base = base.convert("RGBA")
 
-    # Цветные световые пятна (blobs), сильно размытые — добавляют глубину
     blob_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     bdraw = ImageDraw.Draw(blob_layer)
-    accent = RARITY_ACCENT.get(slug, DEFAULT_ACCENT)
-    bdraw.ellipse(
-        [width * 0.65, -height * 0.25, width * 1.35, height * 0.55],
-        fill=(*accent, 130),
-    )
-    bdraw.ellipse(
-        [-width * 0.35, height * 0.55, width * 0.45, height * 1.35],
-        fill=(*c2, 140),
-    )
-    blob_layer = blob_layer.filter(ImageFilter.GaussianBlur(120))
-    base = Image.alpha_composite(base, blob_layer)
+    accent = RARITY_ACCENT.get(slug, (150, 150, 220))
+    bdraw.ellipse([width * 0.5, -height * 0.2, width * 1.3, height * 0.6], fill=(*accent, 120))
+    bdraw.ellipse([-width * 0.3, height * 0.5, width * 0.5, height * 1.3], fill=(*c2, 130))
+    blob_layer = blob_layer.filter(ImageFilter.GaussianBlur(130))
 
-    # Лёгкий шум/виньетка для не-плоского вида
-    vignette = Image.new("L", (width, height), 0)
-    vdraw = ImageDraw.Draw(vignette)
-    vdraw.ellipse([-width * 0.2, -height * 0.2, width * 1.2, height * 1.2], fill=60)
-    vignette = vignette.filter(ImageFilter.GaussianBlur(180))
-    dark_overlay = Image.new("RGBA", (width, height), (0, 0, 0, 90))
-    base = Image.composite(base, Image.alpha_composite(base, dark_overlay), vignette.point(lambda p: 255 - p))
-
-    return base.convert("RGBA")
-
-def _rounded_mask(size: tuple[int, int], radius: int) -> Image.Image:
-    mask = Image.new("L", size, 0)
-    d = ImageDraw.Draw(mask)
-    d.rounded_rectangle([0, 0, size[0] - 1, size[1] - 1], radius=radius, fill=255)
-    return mask
-
-def _glass_panel(
-    canvas: Image.Image,
-    box: tuple[int, int, int, int],
-    radius: int = 32,
-    fill_alpha: int = 60,
-    border_alpha: int = 90,
-    blur_radius: int = 18,
-) -> Image.Image:
-    """
-    Рисует полупрозрачную "стеклянную" панель поверх canvas в заданной
-    области box=(x0,y0,x1,y1): берёт часть фона под панелью, размывает её
-    (эффект backdrop-blur), осветляет полупрозрачной заливкой и обводит
-    тонкой светлой рамкой — классический liquid-glass вид.
-    Возвращает обновлённый canvas (RGBA).
-    """
-    x0, y0, x1, y1 = box
-    w, h = x1 - x0, y1 - y0
-    if w <= 0 or h <= 0:
-        return canvas
-
-    pad = blur_radius * 2
-    src_box = (
-        max(0, x0 - pad), max(0, y0 - pad),
-        min(canvas.width, x1 + pad), min(canvas.height, y1 + pad),
-    )
-    region = canvas.crop(src_box).filter(ImageFilter.GaussianBlur(blur_radius))
-    # Вырезаем обратно нужный кусок (без паддинга)
-    rel_box = (x0 - src_box[0], y0 - src_box[1], x0 - src_box[0] + w, y0 - src_box[1] + h)
-    blurred = region.crop(rel_box)
-
-    # Полупрозрачный белый слой поверх размытого фона (эффект матового стекла)
-    glass_fill = Image.new("RGBA", (w, h), (255, 255, 255, fill_alpha))
-    glass = Image.alpha_composite(blurred.convert("RGBA"), glass_fill)
-
-    mask = _rounded_mask((w, h), radius)
-    canvas.paste(glass, (x0, y0), mask)
-
-    # Тонкая светлая рамка + мягкая тень контура
-    draw = ImageDraw.Draw(canvas)
-    draw.rounded_rectangle(
-        [x0, y0, x1 - 1, y1 - 1], radius=radius,
-        outline=(255, 255, 255, border_alpha), width=2,
-    )
-    # едва заметная внутренняя светлая линия сверху для "стеклянного" блика
-    highlight = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    hdraw = ImageDraw.Draw(highlight)
-    hdraw.rounded_rectangle(
-        [1, 1, w - 2, h * 0.45], radius=radius,
-        fill=(255, 255, 255, 26),
-    )
-    canvas.paste(Image.alpha_composite(Image.new("RGBA", (w, h), (0, 0, 0, 0)), highlight), (x0, y0), mask)
-
-    return canvas
-
-def _wrap_text_to_width(
-    text: str, font: ImageFont.FreeTypeFont, max_width: int, draw: ImageDraw.ImageDraw
-) -> list[str]:
-    """Переносит текст по словам так, чтобы каждая строка помещалась в
-    max_width. Если одно слово само по себе шире max_width (длинные
-    английские составные названия), оно разбивается посимвольно как
-    крайний случай — гарантируя, что текст никогда не вылезет за рамку."""
-    words = text.split()
-    if not words:
-        return [""]
-
-    lines: list[str] = []
-    current = ""
-
-    def width_of(s: str) -> float:
-        bbox = draw.textbbox((0, 0), s, font=font)
-        return bbox[2] - bbox[0]
-
-    for word in words:
-        candidate = f"{current} {word}".strip()
-        if width_of(candidate) <= max_width or not current:
-            if width_of(candidate) <= max_width:
-                current = candidate
-                continue
-            # само слово шире строки — разбиваем посимвольно
-            chunk = ""
-            for ch in word:
-                if width_of(chunk + ch) <= max_width or not chunk:
-                    chunk += ch
-                else:
-                    lines.append(chunk)
-                    chunk = ch
-            current = chunk
-        else:
-            lines.append(current)
-            current = word
-    if current:
-        lines.append(current)
-    return lines
-
-def _fit_font_and_wrap(
-    text: str, max_width: int, max_lines: int, start_size: int, min_size: int,
-    weight: str, draw: ImageDraw.ImageDraw,
-) -> tuple[ImageFont.FreeTypeFont, list[str]]:
-    """Подбирает наибольший размер шрифта (от start_size вниз до min_size),
-    при котором текст помещается в max_lines строк шириной max_width.
-    Гарантирует, что название предмета никогда не выходит за границы
-    изображения — при необходимости шрифт уменьшается или добавляется
-    перенос."""
-    size = start_size
-    while size >= min_size:
-        font = get_font(size, weight)
-        lines = _wrap_text_to_width(text, font, max_width, draw)
-        if len(lines) <= max_lines:
-            return font, lines
-        size -= 2
-    font = get_font(min_size, weight)
-    lines = _wrap_text_to_width(text, font, max_width, draw)
-    # Жёстко обрезаем, если даже на минимальном размере не влезло —
-    # лучше многоточие, чем текст за краями изображения.
-    if len(lines) > max_lines:
-        lines = lines[:max_lines]
-        last = lines[-1]
-        while draw.textbbox((0, 0), last + "…", font=font)[2] > max_width and len(last) > 1:
-            last = last[:-1]
-        lines[-1] = last.rstrip() + "…"
-    return font, lines
-
-def _draw_text_with_shadow(
-    draw: ImageDraw.ImageDraw, xy: tuple[float, float], text: str,
-    font: ImageFont.FreeTypeFont, fill: tuple[int, int, int, int],
-    anchor: str = "ma", shadow_alpha: int = 130, shadow_offset: int = 2,
-) -> None:
-    x, y = xy
-    draw.text((x + shadow_offset, y + shadow_offset), text, anchor=anchor, font=font, fill=(0, 0, 0, shadow_alpha))
-    draw.text((x, y), text, anchor=anchor, font=font, fill=fill)
+    return Image.alpha_composite(base, blob_layer).convert("RGBA")
 
 def create_item_image(item: Item, lang: str) -> io.BytesIO:
+    """Генерирует минималистичную картинку предмета на градиентном фоне без текста."""
     width, height = CARD_W, CARD_H
     slug = item.category_slug
-    accent = RARITY_ACCENT.get(slug, DEFAULT_ACCENT)
-    accent_rgba = (*accent, 255)
 
     canvas = _make_mesh_background(width, height, slug)
-    draw = ImageDraw.Draw(canvas)
-
-    margin = 40
-    content_w = width - margin * 2
-
-    # ---------------------------------------------------------------- #
-    # Верхняя "стеклянная" панель — редкость + событие
-    # ---------------------------------------------------------------- #
-    top_panel_h = 62
-    canvas = _glass_panel(canvas, (margin, margin, width - margin, margin + top_panel_h), radius=22, fill_alpha=55)
-    draw = ImageDraw.Draw(canvas)
-
-    rarity_emoji = RARITY_EMOJI.get(slug, "◆")
-    rarity_text = rarity_label_localized(lang, slug)
-    badge_font = get_font(26, "semibold")
-    draw.text(
-        (margin + 24, margin + top_panel_h / 2), f"{rarity_emoji}  {rarity_text}",
-        anchor="lm", font=badge_font, fill=(255, 255, 255, 245),
-    )
-    if item.origin:
-        origin_font = get_font(20, "medium")
-        origin_text = f"🎁 {item.origin}"
-        bbox = draw.textbbox((0, 0), origin_text, font=origin_font)
-        otw = bbox[2] - bbox[0]
-        max_origin_w = content_w - 260
-        if otw > max_origin_w:
-            while otw > max_origin_w and len(origin_text) > 4:
-                origin_text = origin_text[:-2]
-                bbox = draw.textbbox((0, 0), origin_text + "…", font=origin_font)
-                otw = bbox[2] - bbox[0]
-            origin_text = origin_text.rstrip() + "…"
-        draw.text(
-            (width - margin - 24, margin + top_panel_h / 2), origin_text,
-            anchor="rm", font=origin_font, fill=(230, 230, 240, 220),
-        )
-
-    # ---------------------------------------------------------------- #
-    # Центральная зона: крупная стеклянная панель под изображение предмета
-    # ---------------------------------------------------------------- #
-    img_panel_top = margin + top_panel_h + 20
-    img_panel_bottom = img_panel_top + 340
-    canvas = _glass_panel(
-        canvas, (margin, img_panel_top, width - margin, img_panel_bottom),
-        radius=32, fill_alpha=38, blur_radius=22,
-    )
-    draw = ImageDraw.Draw(canvas)
-
     item_img = download_item_image(item)
+
     panel_center_x = width // 2
-    panel_center_y = (img_panel_top + img_panel_bottom) // 2
+    panel_center_y = height // 2
 
     if item_img:
-        max_size = 300
+        max_size = 540
         ratio = min(max_size / item_img.width, max_size / item_img.height, 1.0)
         new_w = max(1, int(item_img.width * ratio))
         new_h = max(1, int(item_img.height * ratio))
         item_img = item_img.resize((new_w, new_h), Image.LANCZOS)
 
-        # мягкая тень под предметом для глубины
-        shadow = Image.new("RGBA", (new_w + 60, new_h + 60), (0, 0, 0, 0))
+        # Тень под предметом
+        shadow = Image.new("RGBA", (new_w + 80, new_h + 80), (0, 0, 0, 0))
         sdraw = ImageDraw.Draw(shadow)
-        sdraw.ellipse([20, new_h - 10, new_w + 40, new_h + 50], fill=(0, 0, 0, 110))
-        shadow = shadow.filter(ImageFilter.GaussianBlur(18))
+        sdraw.ellipse([20, new_h - 10, new_w + 60, new_h + 70], fill=(0, 0, 0, 100))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(25))
+
         canvas.paste(
             shadow,
-            (panel_center_x - (new_w + 60) // 2, panel_center_y - new_h // 2 - 10),
+            (panel_center_x - (new_w + 80) // 2, panel_center_y - new_h // 2 - 10),
             shadow,
         )
         canvas.paste(
@@ -1602,127 +1315,49 @@ def create_item_image(item: Item, lang: str) -> io.BytesIO:
             item_img,
         )
     else:
-        stub_font = get_font(90, "bold")
         draw = ImageDraw.Draw(canvas)
         draw.text(
-            (panel_center_x, panel_center_y), "🖼", anchor="mm", font=get_font(80, "regular"),
-            fill=(255, 255, 255, 130),
+            (panel_center_x, panel_center_y - 20), "🖼", anchor="mm", font=get_font(110, "regular"),
+            fill=(255, 255, 255, 140),
         )
         draw.text(
-            (panel_center_x, panel_center_y + 70), "нет фото" if lang == "ru" else "no image",
-            anchor="mm", font=get_font(22, "medium"), fill=(255, 255, 255, 150),
+            (panel_center_x, panel_center_y + 80), "Нет фото" if lang == "ru" else "No image",
+            anchor="mm", font=get_font(28, "medium"), fill=(255, 255, 255, 160),
         )
-
-    draw = ImageDraw.Draw(canvas)
-
-    # ---------------------------------------------------------------- #
-    # Панель с названием предмета — с гарантированным автопереносом,
-    # чтобы длинные имена никогда не выходили за края изображения.
-    # ---------------------------------------------------------------- #
-    name_en = item.name or "???"
-    name_ru = get_ru_name(item.name) if (lang == "ru" and item.name) else ""
-    if name_ru and normalize_text(name_ru) != normalize_text(name_en):
-        title_text = f"{name_en} · {name_ru}"
-    else:
-        title_text = name_en
-
-    title_panel_top = img_panel_bottom + 18
-    title_max_w = content_w - 56
-    title_font, title_lines = _fit_font_and_wrap(
-        title_text, title_max_w, max_lines=2, start_size=40, min_size=24,
-        weight="extrabold", draw=draw,
-    )
-    line_h = int(title_font.size * 1.22)
-    title_panel_h = 28 + line_h * len(title_lines) + 22
-
-    canvas = _glass_panel(
-        canvas, (margin, title_panel_top, width - margin, title_panel_top + title_panel_h),
-        radius=26, fill_alpha=50,
-    )
-    draw = ImageDraw.Draw(canvas)
-
-    ty = title_panel_top + 24
-    for line in title_lines:
-        _draw_text_with_shadow(
-            draw, (width / 2, ty), line, title_font,
-            fill=(255, 255, 255, 255), anchor="ma", shadow_alpha=150,
-        )
-        ty += line_h
-
-    # ---------------------------------------------------------------- #
-    # Панель со стоимостью — крупно, акцентным цветом редкости
-    # ---------------------------------------------------------------- #
-    value_panel_top = title_panel_top + title_panel_h + 16
-    value_panel_h = 100
-    canvas = _glass_panel(
-        canvas, (margin, value_panel_top, width - margin, value_panel_top + value_panel_h),
-        radius=26, fill_alpha=48,
-    )
-    draw = ImageDraw.Draw(canvas)
-
-    value_label = t(lang, "value_label").split(" ", 1)[-1] if " " in t(lang, "value_label") else t(lang, "value_label")
-    label_font = get_font(19, "medium")
-    draw.text(
-        (width / 2, value_panel_top + 22), value_label.upper(), anchor="ma",
-        font=label_font, fill=(230, 230, 240, 190),
-    )
-
-    value_str = item.value_display or "N/A"
-    value_text = f"⛁ {value_str}"
-    value_font, value_lines = _fit_font_and_wrap(
-        value_text, content_w - 80, max_lines=1, start_size=46, min_size=26,
-        weight="extrabold", draw=draw,
-    )
-    _draw_text_with_shadow(
-        draw, (width / 2, value_panel_top + 46), value_lines[0], value_font,
-        fill=accent_rgba, anchor="ma", shadow_alpha=160,
-    )
-
-    # ---------------------------------------------------------------- #
-    # Нижняя панель — стабильность (с цветным индикатором)
-    # ---------------------------------------------------------------- #
-    stability_panel_top = value_panel_top + value_panel_h + 16
-    stability_panel_h = 64
-    stability_panel_bottom = min(stability_panel_top + stability_panel_h, height - margin)
-    canvas = _glass_panel(
-        canvas, (margin, stability_panel_top, width - margin, stability_panel_bottom),
-        radius=22, fill_alpha=45,
-    )
-    draw = ImageDraw.Draw(canvas)
-
-    stability_text = localized_stability(lang, item.stability) if item.stability else t(lang, "unknown_stability")
-    stab_color = STABILITY_COLORS.get(normalize_text(item.stability).replace(" ", ""), None)
-    # normalize_text уже убрал пробелы — сопоставим по исходному ключу отдельно
-    stab_key = (item.stability or "").strip().lower()
-    stab_color = STABILITY_COLORS.get(stab_key, DEFAULT_STABILITY_COLOR)
-
-    dot_r = 8
-    dot_cy = (stability_panel_top + stability_panel_bottom) / 2
-    dot_cx = margin + 30
-    draw.ellipse(
-        [dot_cx - dot_r, dot_cy - dot_r, dot_cx + dot_r, dot_cy + dot_r],
-        fill=(*stab_color, 255),
-    )
-    stab_font = get_font(22, "semibold")
-    draw.text(
-        (dot_cx + 20, dot_cy), stability_text, anchor="lm", font=stab_font,
-        fill=(255, 255, 255, 240),
-    )
-
-    # брендинг справа
-    brand_font = get_font(18, "medium")
-    draw.text(
-        (width - margin - 24, dot_cy), "MM2 Values", anchor="rm", font=brand_font,
-        fill=(255, 255, 255, 140),
-    )
 
     bio = io.BytesIO()
-    canvas.convert("RGB").save(bio, format="JPEG", quality=92)
+    canvas.convert("RGB").save(bio, format="JPEG", quality=95)
     bio.seek(0)
     return bio
 
+def format_item_caption(item: Item, lang: str) -> str:
+    """Форматирует эстетичную подпись к изображению товара."""
+    emoji = RARITY_EMOJI.get(item.category_slug, "🟡")
+    rarity_txt = rarity_label_localized(lang, item.category_slug)
+    stab_txt = localized_stability(lang, item.stability) if item.stability else t(lang, "unknown_stability")
+
+    name_en = item.name or "???"
+    name_ru = get_ru_name(item.name) if (lang == "ru" and item.name) else ""
+
+    if name_ru and normalize_text(name_ru) != normalize_text(name_en):
+        title = f"<b>{html.escape(name_en)}</b> (<i>{html.escape(name_ru)}</i>)"
+    else:
+        title = f"<b>{html.escape(name_en)}</b>"
+
+    lines = [
+        f"✨ {title}",
+        f"━━━━━━━━━━━━━━━━━━",
+        f"💰 <b>{t(lang, 'value_label')}:</b> ⛁ <b>{item.value_display or 'N/A'}</b>",
+        f"🏷 <b>{t(lang, 'status_label')}:</b> {emoji} {rarity_txt}",
+        f"📈 <b>{t(lang, 'stability_label')}:</b> {stab_txt}",
+    ]
+    if item.origin:
+        lines.append(f"🎁 <b>{t(lang, 'origin_label')}:</b> {html.escape(item.origin)}")
+
+    return "\n".join(lines)
+
 # --------------------------------------------------------------------------- #
-# Вспомогательные функции для хэндлеров
+# Вспомогательные функции UI
 # --------------------------------------------------------------------------- #
 
 LIST_PAGE_SIZE = 8
@@ -1820,23 +1455,21 @@ def render_list_page_text(lang: str, items: list[Item], page: int, total_pages: 
 
 async def send_item_card(update: Update, context: ContextTypes.DEFAULT_TYPE, item: Item, lang: str) -> None:
     chat_id = update.effective_chat.id
+    caption = format_item_caption(item, lang)
     try:
         photo = create_item_image(item, lang)
-        caption = None
-        await context.bot.send_photo(chat_id=chat_id, photo=photo, caption=caption, parse_mode=ParseMode.HTML)
-    except Exception:
-        logger.exception("Не удалось сгенерировать/отправить карточку предмета '%s'", item.name)
-        name_ru = get_ru_name(item.name) if lang == "ru" else ""
-        title = f"{item.name} · {name_ru}" if name_ru and normalize_text(name_ru) != normalize_text(item.name) else item.name
-        text = (
-            f"<b>{html.escape(title)}</b>\n"
-            f"{t(lang, 'value_label')}: ⛁ {item.value_display or 'N/A'}\n"
-            f"{t(lang, 'stability_label')}: {localized_stability(lang, item.stability) if item.stability else t(lang, 'unknown_stability')}"
+        await context.bot.send_photo(
+            chat_id=chat_id,
+            photo=photo,
+            caption=caption,
+            parse_mode=ParseMode.HTML
         )
-        await context.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
+    except Exception:
+        logger.exception("Не удалось отправить изображение для '%s'", item.name)
+        await context.bot.send_message(chat_id=chat_id, text=caption, parse_mode=ParseMode.HTML)
 
 # --------------------------------------------------------------------------- #
-# Хэндлеры команд
+# Команды
 # --------------------------------------------------------------------------- #
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1927,7 +1560,6 @@ async def search_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not query:
         return
 
-    # Если ждём числовой ввод для фильтра min/max — обрабатываем отдельно.
     awaiting = context.user_data.get("awaiting_filter_input")
     if awaiting in ("min", "max"):
         try:
@@ -1976,7 +1608,7 @@ async def search_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     await send_item_card(update, context, best_item, lang)
 
 # --------------------------------------------------------------------------- #
-# Хэндлер инлайн-кнопок
+# Callback Query
 # --------------------------------------------------------------------------- #
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2107,7 +1739,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
         await query.answer()
     except BadRequest as e:
-        # Например, "message is not modified" при повторном нажатии — безопасно игнорируем.
         logger.warning("BadRequest в callback_query_handler: %s", e)
         try:
             await query.answer()
@@ -2121,7 +1752,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             pass
 
 # --------------------------------------------------------------------------- #
-# Глобальный обработчик ошибок
+# Инициализация и сервер
 # --------------------------------------------------------------------------- #
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2135,7 +1766,6 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
 
     def log_message(self, format, *args):
-        # Отключаем лишний спам логов от health-чеков
         return
 
 def run_health_check_server():
@@ -2145,17 +1775,12 @@ def run_health_check_server():
     httpd.serve_forever()
 
 if __name__ == "__main__":
-    # 1. Инициализируем БД и скачиваем шрифты
     init_db()
     ensure_fonts_downloaded()
 
-    # 2. Запускаем кэширование в фоновом потоке
     threading.Thread(target=cache.refresh, daemon=True).start()
-
-    # 3. Запускаем HTTP-сервер для Render в отдельном потоке
     threading.Thread(target=run_health_check_server, daemon=True).start()
 
-    # 4. Планировщик периодического обновления кэша
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         cache.refresh,
@@ -2165,10 +1790,8 @@ if __name__ == "__main__":
     )
     scheduler.start()
 
-    # 5. Настраиваем и запускаем Telegram бота
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Команды
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("settings", settings_command))
@@ -2177,14 +1800,9 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("filters", filters_command))
     application.add_handler(CommandHandler("list", list_command))
 
-    # Инлайн-кнопки
     application.add_handler(CallbackQueryHandler(callback_query_handler))
-
-    # Текстовые сообщения — поиск предмета (и ввод min/max для фильтров)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_text_message))
 
-    # Глобальный обработчик ошибок, чтобы одно необработанное исключение
-    # не роняло цикл polling целиком.
     application.add_error_handler(error_handler)
 
     logger.info("Запуск Telegram бота (polling)...")
