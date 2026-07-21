@@ -1,10 +1,21 @@
 """
-MM2 Values Telegram Bot (v2.6.4)
-=================================
-- Исправлена отрисовка текста на холсте (пересоздание ImageDraw после композита).
-- Надёжная загрузка изображений: HEAD-проверка, правильный Referer, fallback на URL из src.
-- Изображение предмета увеличено и смещено вниз.
-- Всегда выводится информативная подпись под фото.
+MM2 Values Telegram Bot (v3.0.0) — "Liquid Glass" Edition
+===========================================================
+Изменения относительно предыдущей версии:
+- Полностью переработанный дизайн карточек предметов: Glassmorphism
+  (liquid glass), градиентные фоны, мягкие тени, скруглённые панели,
+  качественная типографика на шрифте Inter (с авто-загрузкой шрифта).
+- Надёжный поиск изображений предметов: приоритет отдаётся реальному
+  src из HTML (там уже лежат официальные короткие имена файлов вида
+  CEvergreen.png / Snowflake.png), плюс большой набор эвристик и
+  запасных вариантов имени файла на случай отсутствия src.
+- Автоматический перенос длинных названий на несколько строк, чтобы
+  текст никогда не вылезал за пределы изображения.
+- Command /filters — гибкая система фильтров (диапазон цены, редкость,
+  стабильность) с инлайн-кнопками, применяется и к ручному вводу,
+  и к команде /list.
+- Command /list — постраничный каталог всех предметов (дорогие -> дешёвые)
+  с инлайн-кнопками, учитывает активные фильтры.
 """
 
 from __future__ import annotations
@@ -12,6 +23,7 @@ from __future__ import annotations
 import html
 import io
 import logging
+import math
 import os
 import random
 import re
@@ -22,14 +34,14 @@ import threading
 import time
 import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import requests
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz, process
 from apscheduler.schedulers.background import BackgroundScheduler
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from telegram import (
     InlineKeyboardButton,
@@ -45,7 +57,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from telegram.error import Conflict, NetworkError, TimedOut
+from telegram.error import Conflict, NetworkError, TimedOut, BadRequest
 
 # --------------------------------------------------------------------------- #
 # Конфигурация
@@ -65,16 +77,20 @@ PORT = int(os.environ.get("PORT", "10000"))
 
 BASE_URL = "https://supremevalues.com"
 
-CATEGORIES: list[tuple[str, str]] = [
-    ("godlies", "Godly"),
-    ("chromas", "Chroma"),
-    ("legendaries", "Legendary"),
-    ("ancients", "Ancient"),
-    ("vintages", "Vintage"),
-    ("rares", "Rare"),
-    ("uncommons", "Uncommon"),
-    ("commons", "Common"),
+# slug на сайте, отображаемая (англ.) редкость, эмодзи редкости
+CATEGORIES: list[tuple[str, str, str]] = [
+    ("godlies", "Godly", "🟡"),
+    ("chromas", "Chroma", "🌈"),
+    ("legendaries", "Legendary", "🟠"),
+    ("ancients", "Ancient", "🟣"),
+    ("vintages", "Vintage", "🟤"),
+    ("rares", "Rare", "🔵"),
+    ("uncommons", "Uncommon", "🟢"),
+    ("commons", "Common", "⚪"),
 ]
+CATEGORY_SLUGS = [c[0] for c in CATEGORIES]
+RARITY_EMOJI = {slug: emoji for slug, _, emoji in CATEGORIES}
+RARITY_LABEL_TO_SLUG = {label.lower(): slug for slug, label, _ in CATEGORIES}
 
 REQUEST_TIMEOUT = 60
 MAX_RETRIES = 5
@@ -105,6 +121,7 @@ class Item:
     ranged_value: Optional[str]
     stability: str
     image_url: str
+    image_url_candidates: list[str] = field(default_factory=list)
     origin: str = ""
 
     @property
@@ -363,16 +380,129 @@ STABILITY_MAP_RU = {
     "hoarded": "Придерживают",
     "rising": "Растёт в цене",
     "dropping": "Падает в цене",
+    "receding": "Снижается",
+    "improving": "Улучшается",
 }
+
+# Канонический порядок фильтра "Стабильность" + эмодзи для UI.
+STABILITY_FILTER_OPTIONS: list[tuple[str, str, str]] = [
+    ("stable", "Стабилен", "🟢"),
+    ("doing well", "Растёт в цене", "📈"),
+    ("fluctuating", "Нестабилен", "🔀"),
+    ("underpaid for", "Недооценён", "💎"),
+    ("unstable", "Нестабилен", "⚠️"),
+    ("hoarded", "Придерживают", "🧲"),
+    ("dropping", "Падает в цене", "📉"),
+]
 
 def _parse_value_to_int(raw: str) -> Optional[int]:
     raw = raw.strip()
     if not raw or raw.upper() in ("N/A", "NA"):
         return None
     try:
-        return int(raw.replace(",", ""))
+        return int(raw.replace(",", "").replace(" ", ""))
     except ValueError:
         return None
+
+def _normalize_image_src(src: str) -> str:
+    """Приводит относительный/сырой src из HTML к абсолютному URL."""
+    src = src.strip()
+    if not src:
+        return ""
+    if src.startswith("//"):
+        return "https:" + src
+    if src.startswith("http://") or src.startswith("https://"):
+        return src
+    if src.startswith(".."):
+        src = re.sub(r"^(\.\./)+", "/", src)
+        return BASE_URL + src
+    if src.startswith("/"):
+        return BASE_URL + src
+    return BASE_URL + "/" + src.lstrip("/")
+
+# Слова, которые сайт обычно отбрасывает при генерации коротких кодов
+# изображений (артикли, служебные слова).
+_IMG_STOPWORDS = {"the", "a", "an", "of"}
+
+_BRACKET_TAG_RE = re.compile(r"\s*[\[\(][^\]\)]*[\]\)]\s*")
+
+def _strip_name_tags(name: str) -> str:
+    """Убирает хвостовые пометки вида [XMAS2018], (Knife) из названия."""
+    return _BRACKET_TAG_RE.sub(" ", name).strip()
+
+def guess_image_filenames(display_name: str) -> list[str]:
+    """
+    Строит список правдоподобных вариантов имени файла изображения на
+    основе одних только эвристик (используется как РЕЗЕРВ, когда
+    реальный src из HTML недоступен или ведёт на несуществующий файл).
+
+    supremevalues.com сокращает длинные имена по неформальным правилам:
+        Chroma Evergreen              -> CEvergreen.png
+        Chroma Traveler's Gun         -> CTG.png
+        Snowflake (Knife) [XMAS2018]  -> Snowflake.png
+        Chroma Snow Dagger            -> CDagger.png
+        Chroma Vampire's Gun          -> CVG.png
+
+    Общая идея: "Chroma"/"C." в начале почти всегда схлопывается в "C",
+    скобочные пометки вида (Knife), [XMAS2018] отбрасываются целиком,
+    а из оставшихся слов берётся либо последнее слово целиком, либо
+    аббревиатура по первым буквам. Однозначного правила нет, поэтому
+    генерируется НЕСКОЛЬКО кандидатов, которые затем перебираются по
+    очереди при скачивании.
+    """
+    clean = _strip_name_tags(display_name)
+    clean = clean.replace("’", "'")
+
+    is_chroma = False
+    words = clean.split()
+    if words and words[0].lower() in ("chroma", "c.", "c"):
+        is_chroma = True
+        words = words[1:]
+    if not words:
+        words = clean.split()
+
+    def _clean_word(w: str) -> str:
+        w = re.sub(r"[^\w']", "", w)
+        if w.lower().endswith("'s"):
+            w = w[:-2]
+        return w
+
+    plain_words = [_clean_word(w) for w in words if _clean_word(w)]
+    plain_words = [w for w in plain_words if w.lower() not in _IMG_STOPWORDS]
+    if not plain_words:
+        fallback_word = re.sub(r"[^\w]", "", clean)
+        plain_words = [fallback_word] if fallback_word else []
+
+    prefix = "C" if is_chroma else ""
+    candidates: list[str] = []
+
+    def add(name: str):
+        if name and name not in candidates:
+            candidates.append(name)
+
+    joined_nospace = "".join(plain_words)
+    first_word = plain_words[0] if plain_words else ""
+    last_word = plain_words[-1] if plain_words else ""
+
+    add(prefix + joined_nospace)                      # CEvergreen / CSnowDagger
+    add(prefix + last_word)                            # CDagger / CBaub
+    add(prefix + first_word)                            # CSnow
+    if len(plain_words) >= 2:
+        initials = "".join(w[0].upper() for w in plain_words if w)
+        add(prefix + initials)                          # CTG / CVG / CConst
+    if plain_words:
+        for cut in (6, 5, 4, 3):
+            if len(plain_words[0]) > cut:
+                add(prefix + plain_words[0][:cut])       # CConst / CSnowst
+    add(joined_nospace)                                 # без префикса вообще
+    add(last_word)
+    add(first_word)
+    safe_name = re.sub(r"[^\w\s-]", "", clean).strip().replace(" ", "_")
+    add(safe_name)
+    add(safe_name.replace("_", ""))
+    add("".join(w.capitalize() for w in plain_words))    # PascalCase
+
+    return [c for c in candidates if c]
 
 def fetch_category(slug: str, rarity_label: str) -> list[Item]:
     target_url = f"{BASE_URL}/mm2/{slug}"
@@ -385,13 +515,10 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
     }
 
     last_error = None
+    resp = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = requests.get(
-                api_url,
-                timeout=REQUEST_TIMEOUT,
-                headers=request_headers,
-            )
+            resp = requests.get(api_url, timeout=REQUEST_TIMEOUT, headers=request_headers)
             if resp.status_code == 200:
                 break
             elif resp.status_code == 409:
@@ -408,7 +535,7 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
         except requests.exceptions.RequestException as e:
             logger.warning("Ошибка запроса для '%s': %s", slug, type(e).__name__)
             last_error = type(e).__name__
-        except Exception as e:
+        except Exception:
             logger.exception("Неизвестная ошибка при запросе '%s'", slug)
             last_error = "Unknown"
 
@@ -425,7 +552,11 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
     items: list[Item] = []
     seen_names: set[str] = set()
 
-    for card in soup.find_all("div", class_="itemcolumn"):
+    cards = soup.find_all("div", class_="itemcolumn")
+    if not cards:
+        cards = soup.find_all("tr")
+
+    for card in cards:
         btn_tag = card.find("button")
         display_name = ""
         if btn_tag and btn_tag.get("data-name"):
@@ -438,9 +569,13 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
         if not display_name:
             display_name = card.get("data-name", "").strip()
 
+        if not display_name:
+            img_probe = card.find("img")
+            if img_probe:
+                display_name = (img_probe.get("alt") or img_probe.get("title") or "").strip()
+
         if not display_name or display_name.lower() == "n/a":
             continue
-
         if display_name.lower() in seen_names:
             continue
         seen_names.add(display_name.lower())
@@ -450,33 +585,55 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
             value_raw = val_tag.get_text(strip=True)
         else:
             value_raw = card.get("data-value", "N/A")
+            if value_raw == "N/A":
+                text_blob = card.get_text(" ", strip=True)
+                m = re.search(r"Value\s*-\s*([\d,]+)", text_blob)
+                if m:
+                    value_raw = m.group(1)
 
         value_int = _parse_value_to_int(value_raw)
         value_display = value_raw if value_int is None else f"{value_int:,}".replace(",", " ")
 
-        stability = card.get("data-stability", "Unknown")
+        stability = card.get("data-stability", "") or "Unknown"
+        if stability == "Unknown":
+            text_blob = card.get_text(" ", strip=True)
+            m = re.search(r"Stability\s*-\s*([A-Za-z ]+?)(?:\s{2,}|Demand|$)", text_blob)
+            if m:
+                stability = m.group(1).strip()
 
-        # Изображение: берём из src, если нет N_A, иначе генерируем
-        image_url = ""
-        img_tag = card.find("img", class_="itemimage")
-        if img_tag and img_tag.get("src"):
-            src = img_tag["src"].strip()
-            if "N_A" not in src.upper():
-                if src.startswith(".."):
-                    src = src.replace("..", BASE_URL)
-                elif src.startswith("/"):
-                    src = BASE_URL + src
-                elif not src.startswith("http"):
-                    src = BASE_URL + "/" + src.lstrip("/")
-                image_url = src
+        # ---------------------------------------------------------------- #
+        # Извлечение изображения (по убыванию приоритета):
+        #  1. Реальный src <img> из карточки — сайт-сгенерированный
+        #     короткий путь (например CEvergreen.png), почти всегда верен.
+        #  2. Эвристически построенные имена файлов как резервные
+        #     кандидаты — перебираются при скачивании, если первый
+        #     вариант не загрузится.
+        # ---------------------------------------------------------------- #
+        image_candidates: list[str] = []
 
-        if not image_url or "N_A" in image_url.upper():
-            safe_name = re.sub(r'[^\w\s-]', '', display_name).strip().replace(' ', '_')
-            image_url = f"{BASE_URL}/media/mm2{slug}/{safe_name}.png"
+        img_tag = card.find("img", class_="itemimage") or card.find("img")
+        if img_tag:
+            for attr in ("src", "data-src", "data-lazy-src"):
+                raw_src = img_tag.get(attr)
+                if raw_src and "N_A" not in raw_src.upper() and "placeholder" not in raw_src.lower():
+                    normalized = _normalize_image_src(raw_src)
+                    if normalized and normalized not in image_candidates:
+                        image_candidates.append(normalized)
+
+        media_dir = f"{BASE_URL}/media/mm2{slug}/"
+        for guess in guess_image_filenames(display_name):
+            candidate = f"{media_dir}{guess}.png"
+            if candidate not in image_candidates:
+                image_candidates.append(candidate)
+
+        image_url = image_candidates[0] if image_candidates else ""
 
         origin = card.get("data-event", "")
-
-        logger.info("DEBUG [%s]: Найдено -> Имя: '%s', Value: '%s'", slug, display_name, value_display)
+        if not origin:
+            text_blob = card.get_text(" ", strip=True)
+            m = re.search(r"Origin\s*-\s*(.+?)(?:\s{2,}|Last Change|$)", text_blob)
+            if m:
+                origin = m.group(1).strip()
 
         items.append(
             Item(
@@ -488,6 +645,7 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
                 ranged_value=None,
                 stability=stability,
                 image_url=image_url,
+                image_url_candidates=image_candidates,
                 origin=origin,
             )
         )
@@ -496,8 +654,7 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
 
 def fetch_all_items() -> list[Item]:
     all_items: list[Item] = []
-
-    for slug, rarity_label in CATEGORIES:
+    for slug, rarity_label, _emoji in CATEGORIES:
         try:
             cat_items = fetch_category(slug, rarity_label)
             logger.info("Категория '%s': найдено %d предметов", slug, len(cat_items))
@@ -537,6 +694,14 @@ class ValuesCache:
             items = fetch_all_items()
             if not items:
                 raise RuntimeError("Парсинг вернул 0 предметов — проверьте API ключ или структуру сайта.")
+            known = load_known_image_urls()
+            for item in items:
+                key = normalize_text(item.name)
+                if key in known:
+                    confirmed = known[key]
+                    if confirmed not in item.image_url_candidates:
+                        item.image_url_candidates.insert(0, confirmed)
+                    item.image_url = confirmed
             with self._lock:
                 self._items = items
                 self._search_index = self._build_search_index(items)
@@ -548,7 +713,7 @@ class ValuesCache:
             with self._lock:
                 self.last_error = str(e)
 
-    def search(self, query: str, limit: int = 5) -> list[tuple[Item, float]]:
+    def search(self, query: str, limit: int = 5, filters: Optional["ItemFilters"] = None) -> list[tuple[Item, float]]:
         with self._lock:
             items = self._items
             index = list(self._search_index)
@@ -559,18 +724,26 @@ class ValuesCache:
         if not variants:
             return []
 
+        allowed_idx: Optional[set[int]] = None
+        if filters is not None and not filters.is_empty:
+            allowed_idx = {i for i, it in enumerate(items) if filters.matches(it)}
+            if not allowed_idx:
+                return []
+
         choices = [key for key, _ in index]
         best_by_idx: dict[int, float] = {}
 
         for variant in variants:
             for key, idx in index:
+                if allowed_idx is not None and idx not in allowed_idx:
+                    continue
                 if key == variant:
                     best_by_idx[idx] = 100.0
-            results = process.extract(
-                variant, choices, scorer=fuzz.WRatio, limit=limit * 3
-            )
+            results = process.extract(variant, choices, scorer=fuzz.WRatio, limit=limit * 6)
             for matched_key, score, pos in results:
                 idx = index[pos][1]
+                if allowed_idx is not None and idx not in allowed_idx:
+                    continue
                 if score > best_by_idx.get(idx, -1):
                     best_by_idx[idx] = score
 
@@ -588,6 +761,25 @@ class ValuesCache:
                 break
         return result
 
+    def all_items(self, filters: Optional["ItemFilters"] = None) -> list[Item]:
+        """Все предметы от самых дорогих к самым дешёвым, с учётом фильтров.
+        Предметы без числовой цены — в конце списка."""
+        with self._lock:
+            items = list(self._items)
+        if filters is not None and not filters.is_empty:
+            items = [it for it in items if filters.matches(it)]
+        items.sort(key=lambda it: (it.value is None, -(it.value or 0)))
+        return items
+
+    def get_by_name(self, name: str) -> Optional[Item]:
+        with self._lock:
+            items = self._items
+        key = normalize_text(name)
+        for it in items:
+            if normalize_text(it.name) == key:
+                return it
+        return None
+
     @property
     def size(self) -> int:
         with self._lock:
@@ -596,7 +788,7 @@ class ValuesCache:
 cache = ValuesCache()
 
 # --------------------------------------------------------------------------- #
-# Настройки
+# Настройки и БД
 # --------------------------------------------------------------------------- #
 
 DEFAULT_LANG = "ru"
@@ -613,6 +805,21 @@ def init_db() -> None:
         )
         conn.execute(
             "INSERT OR IGNORE INTO global_settings (key, value) VALUES ('refresh_interval_days', '7')"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS user_filters ("
+            " user_id INTEGER PRIMARY KEY,"
+            " min_value INTEGER NOT NULL DEFAULT 0,"
+            " max_value INTEGER NOT NULL DEFAULT -1,"
+            " rarity_slug TEXT NOT NULL DEFAULT 'all',"
+            " stability_key TEXT NOT NULL DEFAULT 'all'"
+            ")"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS known_images ("
+            " name_key TEXT PRIMARY KEY,"
+            " url TEXT NOT NULL"
+            ")"
         )
         conn.commit()
 
@@ -649,107 +856,105 @@ def set_refresh_interval_days(days: int) -> None:
         )
         conn.commit()
 
+def load_known_image_urls() -> dict[str, str]:
+    try:
+        with _db_lock, sqlite3.connect(DB_PATH) as conn:
+            cur = conn.execute("SELECT name_key, url FROM known_images")
+            return {row[0]: row[1] for row in cur.fetchall()}
+    except sqlite3.OperationalError:
+        return {}
+
+def save_known_image_url(name_key: str, url: str) -> None:
+    try:
+        with _db_lock, sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "INSERT INTO known_images (name_key, url) VALUES (?, ?) "
+                "ON CONFLICT(name_key) DO UPDATE SET url = excluded.url",
+                (name_key, url),
+            )
+            conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
 # --------------------------------------------------------------------------- #
-# Локализация
+# Фильтры
 # --------------------------------------------------------------------------- #
 
-TEXTS = {
-    "ru": {
-        "start": (
-            "👋 Привет! Я бот для проверки ценности скинов Murder Mystery 2.\n\n"
-            "Просто напиши название предмета на русском или английском "
-            "(опечатки не страшны) — например: <i>Nebula</i>, <i>Туманность</i> "
-            "или даже <i>тумпннлсть</i>.\n\n"
-            "Настройки языка: /settings"
-        ),
-        "help": (
-            "Напиши название предмета MM2 — я найду его ценность.\n"
-            "Команды:\n"
-            "/settings — сменить язык интерфейса\n"
-            "/status — статус базы данных (когда обновлялась)"
-        ),
-        "settings_title": "🌐 Выберите язык интерфейса:",
-        "settings_saved": "✅ Язык сохранён: {lang_name}",
-        "not_found": (
-            "😕 Ничего не найдено по запросу «{query}».\n"
-            "Проверь написание или попробуй английское название предмета."
-        ),
-        "searching": "🔎 Ищу...",
-        "value_label": "Примерная стоимость",
-        "status_label": "Категория",
-        "stability_label": "Стабильность",
-        "unknown_stability": "Неизвестно",
-        "cache_empty": "⏳ База данных ещё загружается, попробуй через минуту.",
-        "status_report": (
-            "📊 Предметов в базе: {count}\n"
-            "🕒 Последнее обновление: {last_update}\n"
-            "⚠️ Ошибка последнего обновления: {error}"
-        ),
-        "status_report_ok": (
-            "📊 Предметов в базе: {count}\n"
-            "🕒 Последнее обновление: {last_update}"
-        ),
-        "never": "ещё не обновлялось",
-        "no_error": "нет",
-        "admin_set_refresh": (
-            "⚙️ Текущий интервал обновления: {days} дн.\n"
-            "Используйте /setrefresh <число> чтобы изменить (от 1 до 90)."
-        ),
-        "admin_refresh_updated": "✅ Интервал обновления изменён на {days} дн.",
-        "admin_refresh_invalid": "❌ Укажите целое число дней от 1 до 90.",
-        "admin_only": "⛔ Эта команда доступна только администратору.",
-    },
-    "en": {
-        "start": (
-            "👋 Hi! I'm a bot for checking Murder Mystery 2 item values.\n\n"
-            "Just type an item name in Russian or English (typos are fine) — "
-            "for example: <i>Nebula</i>, <i>Туманность</i> or even "
-            "<i>tumpnnlst</i>.\n\n"
-            "Language settings: /settings"
-        ),
-        "help": (
-            "Type an MM2 item name — I'll find its value.\n"
-            "Commands:\n"
-            "/settings — change interface language\n"
-            "/status — database status (last update time)"
-        ),
-        "settings_title": "🌐 Choose interface language:",
-        "settings_saved": "✅ Language saved: {lang_name}",
-        "not_found": (
-            "😕 Nothing found for «{query}».\n"
-            "Check the spelling or try the item's English name."
-        ),
-        "searching": "🔎 Searching...",
-        "value_label": "Estimated value",
-        "status_label": "Category",
-        "stability_label": "Stability",
-        "unknown_stability": "Unknown",
-        "cache_empty": "⏳ Database is still loading, please try again in a minute.",
-        "status_report": (
-            "📊 Items in database: {count}\n"
-            "🕒 Last update: {last_update}\n"
-            "⚠️ Last update error: {error}"
-        ),
-        "status_report_ok": (
-            "📊 Items in database: {count}\n"
-            "🕒 Last update: {last_update}"
-        ),
-        "never": "not updated yet",
-        "no_error": "none",
-        "admin_set_refresh": (
-            "⚙️ Current refresh interval: {days} days.\n"
-            "Use /setrefresh <number> to change (1–90)."
-        ),
-        "admin_refresh_updated": "✅ Refresh interval set to {days} days.",
-        "admin_refresh_invalid": "❌ Please enter an integer from 1 to 90.",
-        "admin_only": "⛔ This command is for the administrator only.",
-    },
+@dataclass
+class ItemFilters:
+    min_value: int = 0
+    max_value: int = -1          # -1 = неограниченно
+    rarity_slug: str = "all"     # "all" или slug категории
+    stability_key: str = "all"   # "all" или нормализованный ключ стабильности
+
+    @property
+    def is_empty(self) -> bool:
+        return (
+            self.min_value == 0
+            and self.max_value == -1
+            and self.rarity_slug == "all"
+            and self.stability_key == "all"
+        )
+
+    def matches(self, item: Item) -> bool:
+        if item.value is not None:
+            if item.value < self.min_value:
+                return False
+            if self.max_value != -1 and item.value > self.max_value:
+                return False
+        else:
+            if self.min_value > 0 or self.max_value != -1:
+                return False
+
+        if self.rarity_slug != "all" and item.category_slug != self.rarity_slug:
+            return False
+
+        if self.stability_key != "all":
+            if normalize_text(item.stability) != normalize_text(self.stability_key):
+                return False
+
+        return True
+
+def get_user_filters(user_id: int) -> ItemFilters:
+    with _db_lock, sqlite3.connect(DB_PATH) as conn:
+        cur = conn.execute(
+            "SELECT min_value, max_value, rarity_slug, stability_key FROM user_filters WHERE user_id = ?",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if row:
+            return ItemFilters(min_value=row[0], max_value=row[1], rarity_slug=row[2], stability_key=row[3])
+        return ItemFilters()
+
+def set_user_filters(user_id: int, filters: ItemFilters) -> None:
+    with _db_lock, sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO user_filters (user_id, min_value, max_value, rarity_slug, stability_key) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET "
+            "min_value = excluded.min_value, max_value = excluded.max_value, "
+            "rarity_slug = excluded.rarity_slug, stability_key = excluded.stability_key",
+            (user_id, filters.min_value, filters.max_value, filters.rarity_slug, filters.stability_key),
+        )
+        conn.commit()
+
+def reset_user_filters(user_id: int) -> None:
+    set_user_filters(user_id, ItemFilters())
+
+# --------------------------------------------------------------------------- #
+# Локализация редкости/стабильности
+# --------------------------------------------------------------------------- #
+
+RARITY_RU_LABELS = {
+    "godlies": "Godly",
+    "chromas": "Chroma",
+    "legendaries": "Legendary",
+    "ancients": "Ancient",
+    "vintages": "Vintage",
+    "rares": "Rare",
+    "uncommons": "Uncommon",
+    "commons": "Common",
 }
-
-def t(lang: str, key: str, **kwargs) -> str:
-    lang = lang if lang in TEXTS else DEFAULT_LANG
-    template = TEXTS[lang].get(key, TEXTS[DEFAULT_LANG][key])
-    return template.format(**kwargs) if kwargs else template
 
 def localized_stability(lang: str, stability_en: str) -> str:
     if lang == "en":
@@ -757,407 +962,761 @@ def localized_stability(lang: str, stability_en: str) -> str:
     key = stability_en.strip().lower()
     return STABILITY_MAP_RU.get(key, stability_en)
 
+def stability_label(lang: str, key: str) -> str:
+    for k, ru_label, _emoji in STABILITY_FILTER_OPTIONS:
+        if k == key:
+            return ru_label if lang == "ru" else k.title()
+    return key
+
+def rarity_label_localized(lang: str, slug: str) -> str:
+    for cslug, label, _emoji in CATEGORIES:
+        if cslug == slug:
+            if lang == "ru":
+                return RARITY_RU_LABELS.get(cslug, label)
+            return label
+    return slug
+
+TEXTS: dict[str, dict[str, str]] = {"ru": {}, "en": {}}
+
+TEXTS["ru"].update({
+    "start": (
+        "👋 <b>Привет!</b> Я бот-оценщик ценности предметов Murder Mystery 2.\n\n"
+        "✏️ Просто напиши название предмета на русском или английском "
+        "(опечатки не страшны) — например: <i>Nebula</i>, <i>Туманность</i> "
+        "или даже <i>тумпннлсть</i>.\n\n"
+        "📋 <b>Команды:</b>\n"
+        "🌐 /settings — язык интерфейса\n"
+        "🎚 /filters — настроить фильтры поиска\n"
+        "📜 /list — каталог всех предметов\n"
+        "📊 /status — статус базы данных"
+    ),
+    "help": (
+        "ℹ️ Напиши название предмета MM2 — я найду его ценность.\n\n"
+        "📋 <b>Команды:</b>\n"
+        "🌐 /settings — сменить язык интерфейса\n"
+        "🎚 /filters — настроить фильтры (цена, редкость, стабильность)\n"
+        "📜 /list — список всех предметов (дорогие → дешёвые)\n"
+        "📊 /status — статус базы данных (когда обновлялась)"
+    ),
+    "settings_title": "🌐 <b>Выберите язык интерфейса</b>",
+    "settings_saved": "✅ Язык сохранён: <b>{lang_name}</b>",
+    "not_found": (
+        "😕 Ничего не найдено по запросу «{query}».\n"
+        "✏️ Проверь написание или попробуй английское название предмета.\n"
+        "🎚 Возможно, стоит проверить активные /filters."
+    ),
+    "searching": "🔎 Ищу...",
+    "value_label": "💰 Примерная стоимость",
+    "status_label": "🏷 Категория",
+    "stability_label": "📈 Стабильность",
+    "origin_label": "🎁 Событие",
+    "unknown_stability": "Неизвестно",
+    "cache_empty": "⏳ База данных ещё загружается, попробуй через минуту.",
+    "status_report": (
+        "📊 Предметов в базе: <b>{count}</b>\n"
+        "🕒 Последнее обновление: <b>{last_update}</b>\n"
+        "⚠️ Ошибка последнего обновления: <b>{error}</b>"
+    ),
+    "status_report_ok": (
+        "📊 Предметов в базе: <b>{count}</b>\n"
+        "🕒 Последнее обновление: <b>{last_update}</b>"
+    ),
+    "never": "ещё не обновлялось",
+    "no_error": "нет",
+    "admin_set_refresh": (
+        "⚙️ Текущий интервал обновления: {days} дн.\n"
+        "Используйте /setrefresh <число> чтобы изменить (от 1 до 90)."
+    ),
+    "admin_refresh_updated": "✅ Интервал обновления изменён на {days} дн.",
+    "admin_refresh_invalid": "❌ Укажите целое число дней от 1 до 90.",
+    "admin_only": "⛔ Эта команда доступна только администратору.",
+})
+
+TEXTS["ru"].update({
+    "filters_title": "🎚 <b>Фильтры поиска</b>\n\nНастрой параметры и нажми «Применить».",
+    "filters_btn_min": "💵 Валюта (от): {value}",
+    "filters_btn_max": "💰 Валюта (до): {value}",
+    "filters_btn_rarity": "🏷 Редкость: {value}",
+    "filters_btn_stability": "📈 Стабильность: {value}",
+    "filters_btn_apply": "✅ Применить",
+    "filters_btn_reset": "♻️ Сбросить",
+    "filters_unlimited": "∞ неограниченно",
+    "filters_all": "все",
+    "filters_ask_min": "✏️ Введи <b>минимальное</b> значение цены числом (например: 1000):",
+    "filters_ask_max": "✏️ Введи <b>максимальное</b> значение цены числом, либо -1 для «неограниченно»:",
+    "filters_invalid_number": "❌ Это не похоже на корректное число. Попробуй ещё раз:",
+    "filters_invalid_range": "❌ Минимум не может быть больше максимума. Попробуй ещё раз:",
+    "filters_invalid_negative": "❌ Значение не может быть отрицательным (кроме -1 для «неограниченно»). Попробуй ещё раз:",
+    "filters_saved": "✅ Значение сохранено",
+    "filters_applied": "✅ Фильтры применены!",
+    "filters_rarity_title": "🏷 <b>Выберите редкость</b>",
+    "filters_stability_title": "📈 <b>Выберите стабильность</b>",
+    "filters_option_all": "✅ Все",
+    "list_title": "📜 <b>Каталог предметов</b> (дорогие → дешёвые)",
+    "list_empty": "😕 По заданным фильтрам ничего не найдено. Проверь /filters.",
+    "list_nav_page": "📄 {page}/{total}",
+})
+
+TEXTS["en"].update({
+    "start": (
+        "👋 <b>Hi!</b> I'm a Murder Mystery 2 item value checker bot.\n\n"
+        "✏️ Just type an item name in English or Russian (typos are fine) — "
+        "for example: <i>Nebula</i>, <i>Icewing</i>.\n\n"
+        "📋 <b>Commands:</b>\n"
+        "🌐 /settings — interface language\n"
+        "🎚 /filters — configure search filters\n"
+        "📜 /list — item catalog\n"
+        "📊 /status — database status"
+    ),
+    "help": (
+        "ℹ️ Type an MM2 item name — I'll find its value.\n\n"
+        "📋 <b>Commands:</b>\n"
+        "🌐 /settings — change interface language\n"
+        "🎚 /filters — configure filters (price, rarity, stability)\n"
+        "📜 /list — list of all items (expensive → cheap)\n"
+        "📊 /status — database status (last update time)"
+    ),
+    "settings_title": "🌐 <b>Choose interface language</b>",
+    "settings_saved": "✅ Language saved: <b>{lang_name}</b>",
+    "not_found": (
+        "😕 Nothing found for «{query}».\n"
+        "✏️ Check the spelling or try the item's other-language name.\n"
+        "🎚 You may also want to check your active /filters."
+    ),
+    "searching": "🔎 Searching...",
+    "value_label": "💰 Estimated value",
+    "status_label": "🏷 Category",
+    "stability_label": "📈 Stability",
+    "origin_label": "🎁 Origin",
+    "unknown_stability": "Unknown",
+    "cache_empty": "⏳ Database is still loading, please try again in a minute.",
+})
+
+TEXTS["en"].update({
+    "status_report": (
+        "📊 Items in database: <b>{count}</b>\n"
+        "🕒 Last update: <b>{last_update}</b>\n"
+        "⚠️ Last update error: <b>{error}</b>"
+    ),
+    "status_report_ok": (
+        "📊 Items in database: <b>{count}</b>\n"
+        "🕒 Last update: <b>{last_update}</b>"
+    ),
+    "never": "not updated yet",
+    "no_error": "none",
+    "admin_set_refresh": (
+        "⚙️ Current refresh interval: {days} days.\n"
+        "Use /setrefresh <number> to change (1–90)."
+    ),
+    "admin_refresh_updated": "✅ Refresh interval set to {days} days.",
+    "admin_refresh_invalid": "❌ Please enter an integer from 1 to 90.",
+    "admin_only": "⛔ This command is for the administrator only.",
+})
+
+TEXTS["en"].update({
+    "filters_title": "🎚 <b>Search filters</b>\n\nAdjust the parameters and press \"Apply\".",
+    "filters_btn_min": "💵 Currency (from): {value}",
+    "filters_btn_max": "💰 Currency (to): {value}",
+    "filters_btn_rarity": "🏷 Rarity: {value}",
+    "filters_btn_stability": "📈 Stability: {value}",
+    "filters_btn_apply": "✅ Apply",
+    "filters_btn_reset": "♻️ Reset",
+    "filters_unlimited": "∞ unlimited",
+    "filters_all": "all",
+    "filters_ask_min": "✏️ Enter the <b>minimum</b> price as a number (e.g. 1000):",
+    "filters_ask_max": "✏️ Enter the <b>maximum</b> price as a number, or -1 for \"unlimited\":",
+    "filters_invalid_number": "❌ That doesn't look like a valid number. Try again:",
+    "filters_invalid_range": "❌ Minimum can't be greater than maximum. Try again:",
+    "filters_invalid_negative": "❌ Value can't be negative (except -1 for \"unlimited\"). Try again:",
+    "filters_saved": "✅ Value saved",
+    "filters_applied": "✅ Filters applied!",
+    "filters_rarity_title": "🏷 <b>Choose rarity</b>",
+    "filters_stability_title": "📈 <b>Choose stability</b>",
+    "filters_option_all": "✅ All",
+    "list_title": "📜 <b>Item catalog</b> (expensive → cheap)",
+    "list_empty": "😕 Nothing matches your filters. Check /filters.",
+    "list_nav_page": "📄 {page}/{total}",
+})
+
+def t(lang: str, key: str, **kwargs) -> str:
+    lang = lang if lang in TEXTS else DEFAULT_LANG
+    template = TEXTS[lang].get(key, TEXTS[DEFAULT_LANG].get(key, key))
+    return template.format(**kwargs) if kwargs else template
+
 # --------------------------------------------------------------------------- #
-# Генерация изображения
+# Шрифты (Inter, с автозагрузкой + запасным вариантом)
 # --------------------------------------------------------------------------- #
 
-FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-FONT_PATH_REGULAR = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+os.makedirs(FONTS_DIR, exist_ok=True)
 
-def get_font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
-    path = FONT_PATH if bold else FONT_PATH_REGULAR
+# Официальный репозиторий Google Fonts — стабильный публичный источник.
+_INTER_SOURCES = {
+    "Inter-Regular.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/static/Inter-Regular.ttf",
+    "Inter-Medium.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/static/Inter-Medium.ttf",
+    "Inter-SemiBold.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/static/Inter-SemiBold.ttf",
+    "Inter-Bold.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/static/Inter-Bold.ttf",
+    "Inter-ExtraBold.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/static/Inter-ExtraBold.ttf",
+    "Inter-Black.ttf": "https://raw.githubusercontent.com/google/fonts/main/ofl/inter/static/Inter-Black.ttf",
+}
+
+_FALLBACK_FONT_MAP = {
+    "Inter-Regular.ttf": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "Inter-Medium.ttf": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "Inter-SemiBold.ttf": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "Inter-Bold.ttf": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "Inter-ExtraBold.ttf": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "Inter-Black.ttf": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+}
+
+_font_cache: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
+_fonts_ready = threading.Event()
+
+def ensure_fonts_downloaded() -> None:
+    """Скачивает шрифты Inter один раз при старте бота. При любой ошибке
+    сети просто оставляет системный DejaVu — рендер не сломается."""
+    for filename, url in _INTER_SOURCES.items():
+        dest = os.path.join(FONTS_DIR, filename)
+        if os.path.exists(dest) and os.path.getsize(dest) > 10_000:
+            continue
+        try:
+            resp = requests.get(url, timeout=20)
+            if resp.status_code == 200 and len(resp.content) > 10_000:
+                with open(dest, "wb") as f:
+                    f.write(resp.content)
+                logger.info("Шрифт %s загружен (%d байт)", filename, len(resp.content))
+            else:
+                logger.warning("Не удалось скачать шрифт %s: HTTP %s", filename, resp.status_code)
+        except Exception as e:
+            logger.warning("Ошибка загрузки шрифта %s: %s", filename, e)
+    _fonts_ready.set()
+
+def _font_path(weight_file: str) -> str:
+    local_path = os.path.join(FONTS_DIR, weight_file)
+    if os.path.exists(local_path) and os.path.getsize(local_path) > 10_000:
+        return local_path
+    return _FALLBACK_FONT_MAP.get(weight_file, _FALLBACK_FONT_MAP["Inter-Regular.ttf"])
+
+def get_font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
+    weight_file = {
+        "regular": "Inter-Regular.ttf",
+        "medium": "Inter-Medium.ttf",
+        "semibold": "Inter-SemiBold.ttf",
+        "bold": "Inter-Bold.ttf",
+        "extrabold": "Inter-ExtraBold.ttf",
+        "black": "Inter-Black.ttf",
+    }.get(weight, "Inter-Regular.ttf")
+
+    cache_key = (weight_file, size)
+    if cache_key in _font_cache:
+        return _font_cache[cache_key]
+
+    path = _font_path(weight_file)
     try:
-        return ImageFont.truetype(path, size)
+        font = ImageFont.truetype(path, size)
     except OSError:
         logger.warning("Не удалось загрузить шрифт %s, использую стандартный.", path)
-        return ImageFont.load_default()
+        font = ImageFont.load_default()
+    _font_cache[cache_key] = font
+    return font
 
-def download_image(url: str) -> Optional[Image.Image]:
+# --------------------------------------------------------------------------- #
+# Загрузка изображений предметов
+# --------------------------------------------------------------------------- #
+
+_IMG_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Referer": "https://supremevalues.com/",
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+}
+
+# Небольшой процессный кэш "URL -> сработал ли" чтобы не пробивать одни и
+# те же битые ссылки повторно в рамках сессии.
+_url_status_cache: dict[str, bool] = {}
+
+def _try_download_single(url: str) -> Optional[Image.Image]:
     if not url:
         return None
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "Referer": "https://supremevalues.com/",
-        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-    }
-    # Проверим HEAD
+    if _url_status_cache.get(url) is False:
+        return None
     try:
-        head_resp = requests.head(url, headers=headers, timeout=10)
-        if head_resp.status_code != 200:
-            logger.warning("HEAD для %s вернул %d", url, head_resp.status_code)
-            # Попробуем альтернативный URL с заменой пробелов на подчеркивания (на всякий случай)
-            alt_url = url.replace(" ", "_")
-            if alt_url != url:
-                head_resp = requests.head(alt_url, headers=headers, timeout=10)
-                if head_resp.status_code == 200:
-                    url = alt_url
-    except Exception:
-        pass
-
-    try:
-        resp = requests.get(url, headers=headers, timeout=15)
+        resp = requests.get(url, headers=_IMG_HEADERS, timeout=12)
         if resp.status_code != 200:
-            logger.warning("Загрузка изображения %s вернула статус %d", url, resp.status_code)
+            _url_status_cache[url] = False
             return None
         content_type = resp.headers.get("Content-Type", "")
-        if not content_type.startswith("image/"):
-            logger.warning("Неверный Content-Type для %s: %s", url, content_type)
+        if not content_type.startswith("image/") and len(resp.content) < 100:
+            _url_status_cache[url] = False
             return None
-        if len(resp.content) < 100:
-            logger.warning("Слишком маленький ответ для %s (%d байт)", url, len(resp.content))
+        if len(resp.content) < 80:
+            _url_status_cache[url] = False
             return None
-        return Image.open(io.BytesIO(resp.content)).convert("RGBA")
-    except Exception as e:
-        logger.warning("Не удалось скачать изображение %s: %s", url, e)
+        img = Image.open(io.BytesIO(resp.content))
+        img.load()
+        _url_status_cache[url] = True
+        return img.convert("RGBA")
+    except Exception:
+        _url_status_cache[url] = False
         return None
 
-def create_item_image(item: Item, lang: str) -> io.BytesIO:
-    width, height = 800, 600
-    bg_color1 = (26, 26, 46)
-    bg_color2 = (22, 33, 62)
-    img = Image.new("RGBA", (width, height), bg_color1)
-    draw = ImageDraw.Draw(img)
+def download_item_image(item: Item) -> Optional[Image.Image]:
+    """
+    Перебирает все кандидаты URL изображения для предмета (реальный src
+    из HTML первым, затем эвристические варианты коротких имён файлов) и
+    возвращает первое успешно загруженное изображение. При успехе
+    запоминает рабочий URL в БД, чтобы при следующем обновлении кэша он
+    сразу оказался первым кандидатом.
+    """
+    candidates = list(item.image_url_candidates) or ([item.image_url] if item.image_url else [])
+    if not candidates:
+        return None
 
-    # Градиентный фон
+    # Также пробуем вариант с подчёркиваниями вместо пробелов для
+    # каждого кандидата — на случай экзотических путей.
+    extra: list[str] = []
+    for c in candidates:
+        alt = c.replace(" ", "_")
+        if alt != c and alt not in candidates and alt not in extra:
+            extra.append(alt)
+    all_candidates = candidates + extra
+
+    for url in all_candidates:
+        img = _try_download_single(url)
+        if img is not None:
+            if url != item.image_url:
+                item.image_url = url
+            save_known_image_url(normalize_text(item.name), url)
+            return img
+    return None
+
+# --------------------------------------------------------------------------- #
+# Генерация изображения карточки (Glassmorphism / Liquid Glass)
+# --------------------------------------------------------------------------- #
+
+CARD_W, CARD_H = 1000, 720
+
+# Палитры фона по редкости — мягкие насыщенные градиенты, характерные
+# именно для этой категории предметов.
+RARITY_GRADIENTS: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
+    "godlies":     ((255, 196, 64), (120, 40, 140)),
+    "chromas":     ((255, 90, 205), (70, 60, 255)),
+    "legendaries": ((255, 140, 60), (140, 30, 30)),
+    "ancients":    ((170, 100, 255), (40, 20, 90)),
+    "vintages":    ((190, 150, 110), (60, 40, 30)),
+    "rares":       ((80, 150, 255), (20, 40, 110)),
+    "uncommons":   ((80, 220, 140), (10, 60, 50)),
+    "commons":     ((190, 200, 210), (60, 60, 70)),
+}
+DEFAULT_GRADIENT = ((90, 90, 140), (20, 20, 40))
+
+RARITY_ACCENT: dict[str, tuple[int, int, int]] = {
+    "godlies":     (255, 210, 90),
+    "chromas":     (255, 110, 220),
+    "legendaries": (255, 150, 70),
+    "ancients":    (190, 130, 255),
+    "vintages":    (205, 170, 130),
+    "rares":       (110, 170, 255),
+    "uncommons":   (100, 230, 160),
+    "commons":     (210, 215, 225),
+}
+DEFAULT_ACCENT = (150, 150, 220)
+
+STABILITY_COLORS: dict[str, tuple[int, int, int]] = {
+    "stable": (110, 231, 165),
+    "doing well": (110, 200, 255),
+    "improving": (110, 200, 255),
+    "fluctuating": (255, 196, 92),
+    "underpaid for": (255, 140, 210),
+    "unstable": (255, 120, 120),
+    "hoarded": (200, 160, 255),
+    "rising": (110, 231, 165),
+    "dropping": (255, 120, 120),
+    "receding": (255, 160, 120),
+}
+DEFAULT_STABILITY_COLOR = (200, 205, 220)
+
+def _lerp_color(c1: tuple[int, int, int], c2: tuple[int, int, int], t_: float) -> tuple[int, int, int]:
+    return (
+        int(c1[0] + (c2[0] - c1[0]) * t_),
+        int(c1[1] + (c2[1] - c1[1]) * t_),
+        int(c1[2] + (c2[2] - c1[2]) * t_),
+    )
+
+def _make_mesh_background(width: int, height: int, slug: str) -> Image.Image:
+    """Мягкий диагональный градиент + два расплывчатых цветных пятна —
+    имитация фонового "mesh gradient", характерного для glassmorphism-UI."""
+    c1, c2 = RARITY_GRADIENTS.get(slug, DEFAULT_GRADIENT)
+    base = Image.new("RGB", (width, height), c1)
+    px = base.load()
+    diag = (width ** 2 + height ** 2) ** 0.5
     for y in range(height):
-        r = int(bg_color1[0] + (bg_color2[0] - bg_color1[0]) * y / height)
-        g = int(bg_color1[1] + (bg_color2[1] - bg_color1[1]) * y / height)
-        b = int(bg_color1[2] + (bg_color2[2] - bg_color1[2]) * y / height)
-        draw.line([(0, y), (width, y)], fill=(r, g, b))
+        for x in range(0, width, 2):
+            t_ = ((x * 0.6 + y * 0.4)) / (width * 0.6 + height * 0.4)
+            col = _lerp_color(c1, c2, min(1.0, max(0.0, t_)))
+            px[x, y] = col
+            if x + 1 < width:
+                px[x + 1, y] = col
+    base = base.convert("RGBA")
 
-    # Полупрозрачная плашка внизу
-    overlay = Image.new("RGBA", (width, height), (255, 255, 255, 0))
-    overlay_draw = ImageDraw.Draw(overlay)
-    overlay_draw.rectangle([(20, 400), (width - 20, 580)], fill=(0, 0, 0, 160))
-    img = Image.alpha_composite(img, overlay)
+    # Цветные световые пятна (blobs), сильно размытые — добавляют глубину
+    blob_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    bdraw = ImageDraw.Draw(blob_layer)
+    accent = RARITY_ACCENT.get(slug, DEFAULT_ACCENT)
+    bdraw.ellipse(
+        [width * 0.65, -height * 0.25, width * 1.35, height * 0.55],
+        fill=(*accent, 130),
+    )
+    bdraw.ellipse(
+        [-width * 0.35, height * 0.55, width * 0.45, height * 1.35],
+        fill=(*c2, 140),
+    )
+    blob_layer = blob_layer.filter(ImageFilter.GaussianBlur(120))
+    base = Image.alpha_composite(base, blob_layer)
 
-    # Изображение предмета
-    item_img = None
-    if item.image_url:
-        item_img = download_image(item.image_url)
+    # Лёгкий шум/виньетка для не-плоского вида
+    vignette = Image.new("L", (width, height), 0)
+    vdraw = ImageDraw.Draw(vignette)
+    vdraw.ellipse([-width * 0.2, -height * 0.2, width * 1.2, height * 1.2], fill=60)
+    vignette = vignette.filter(ImageFilter.GaussianBlur(180))
+    dark_overlay = Image.new("RGBA", (width, height), (0, 0, 0, 90))
+    base = Image.composite(base, Image.alpha_composite(base, dark_overlay), vignette.point(lambda p: 255 - p))
+
+    return base.convert("RGBA")
+
+def _rounded_mask(size: tuple[int, int], radius: int) -> Image.Image:
+    mask = Image.new("L", size, 0)
+    d = ImageDraw.Draw(mask)
+    d.rounded_rectangle([0, 0, size[0] - 1, size[1] - 1], radius=radius, fill=255)
+    return mask
+
+def _glass_panel(
+    canvas: Image.Image,
+    box: tuple[int, int, int, int],
+    radius: int = 32,
+    fill_alpha: int = 60,
+    border_alpha: int = 90,
+    blur_radius: int = 18,
+) -> Image.Image:
+    """
+    Рисует полупрозрачную "стеклянную" панель поверх canvas в заданной
+    области box=(x0,y0,x1,y1): берёт часть фона под панелью, размывает её
+    (эффект backdrop-blur), осветляет полупрозрачной заливкой и обводит
+    тонкой светлой рамкой — классический liquid-glass вид.
+    Возвращает обновлённый canvas (RGBA).
+    """
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
+    if w <= 0 or h <= 0:
+        return canvas
+
+    pad = blur_radius * 2
+    src_box = (
+        max(0, x0 - pad), max(0, y0 - pad),
+        min(canvas.width, x1 + pad), min(canvas.height, y1 + pad),
+    )
+    region = canvas.crop(src_box).filter(ImageFilter.GaussianBlur(blur_radius))
+    # Вырезаем обратно нужный кусок (без паддинга)
+    rel_box = (x0 - src_box[0], y0 - src_box[1], x0 - src_box[0] + w, y0 - src_box[1] + h)
+    blurred = region.crop(rel_box)
+
+    # Полупрозрачный белый слой поверх размытого фона (эффект матового стекла)
+    glass_fill = Image.new("RGBA", (w, h), (255, 255, 255, fill_alpha))
+    glass = Image.alpha_composite(blurred.convert("RGBA"), glass_fill)
+
+    mask = _rounded_mask((w, h), radius)
+    canvas.paste(glass, (x0, y0), mask)
+
+    # Тонкая светлая рамка + мягкая тень контура
+    draw = ImageDraw.Draw(canvas)
+    draw.rounded_rectangle(
+        [x0, y0, x1 - 1, y1 - 1], radius=radius,
+        outline=(255, 255, 255, border_alpha), width=2,
+    )
+    # едва заметная внутренняя светлая линия сверху для "стеклянного" блика
+    highlight = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    hdraw = ImageDraw.Draw(highlight)
+    hdraw.rounded_rectangle(
+        [1, 1, w - 2, h * 0.45], radius=radius,
+        fill=(255, 255, 255, 26),
+    )
+    canvas.paste(Image.alpha_composite(Image.new("RGBA", (w, h), (0, 0, 0, 0)), highlight), (x0, y0), mask)
+
+    return canvas
+
+def _wrap_text_to_width(
+    text: str, font: ImageFont.FreeTypeFont, max_width: int, draw: ImageDraw.ImageDraw
+) -> list[str]:
+    """Переносит текст по словам так, чтобы каждая строка помещалась в
+    max_width. Если одно слово само по себе шире max_width (длинные
+    английские составные названия), оно разбивается посимвольно как
+    крайний случай — гарантируя, что текст никогда не вылезет за рамку."""
+    words = text.split()
+    if not words:
+        return [""]
+
+    lines: list[str] = []
+    current = ""
+
+    def width_of(s: str) -> float:
+        bbox = draw.textbbox((0, 0), s, font=font)
+        return bbox[2] - bbox[0]
+
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if width_of(candidate) <= max_width or not current:
+            if width_of(candidate) <= max_width:
+                current = candidate
+                continue
+            # само слово шире строки — разбиваем посимвольно
+            chunk = ""
+            for ch in word:
+                if width_of(chunk + ch) <= max_width or not chunk:
+                    chunk += ch
+                else:
+                    lines.append(chunk)
+                    chunk = ch
+            current = chunk
+        else:
+            lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
+    return lines
+
+def _fit_font_and_wrap(
+    text: str, max_width: int, max_lines: int, start_size: int, min_size: int,
+    weight: str, draw: ImageDraw.ImageDraw,
+) -> tuple[ImageFont.FreeTypeFont, list[str]]:
+    """Подбирает наибольший размер шрифта (от start_size вниз до min_size),
+    при котором текст помещается в max_lines строк шириной max_width.
+    Гарантирует, что название предмета никогда не выходит за границы
+    изображения — при необходимости шрифт уменьшается или добавляется
+    перенос."""
+    size = start_size
+    while size >= min_size:
+        font = get_font(size, weight)
+        lines = _wrap_text_to_width(text, font, max_width, draw)
+        if len(lines) <= max_lines:
+            return font, lines
+        size -= 2
+    font = get_font(min_size, weight)
+    lines = _wrap_text_to_width(text, font, max_width, draw)
+    # Жёстко обрезаем, если даже на минимальном размере не влезло —
+    # лучше многоточие, чем текст за краями изображения.
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        last = lines[-1]
+        while draw.textbbox((0, 0), last + "…", font=font)[2] > max_width and len(last) > 1:
+            last = last[:-1]
+        lines[-1] = last.rstrip() + "…"
+    return font, lines
+
+def _draw_text_with_shadow(
+    draw: ImageDraw.ImageDraw, xy: tuple[float, float], text: str,
+    font: ImageFont.FreeTypeFont, fill: tuple[int, int, int, int],
+    anchor: str = "ma", shadow_alpha: int = 130, shadow_offset: int = 2,
+) -> None:
+    x, y = xy
+    draw.text((x + shadow_offset, y + shadow_offset), text, anchor=anchor, font=font, fill=(0, 0, 0, shadow_alpha))
+    draw.text((x, y), text, anchor=anchor, font=font, fill=fill)
+
+def create_item_image(item: Item, lang: str) -> io.BytesIO:
+    width, height = CARD_W, CARD_H
+    slug = item.category_slug
+    accent = RARITY_ACCENT.get(slug, DEFAULT_ACCENT)
+    accent_rgba = (*accent, 255)
+
+    canvas = _make_mesh_background(width, height, slug)
+    draw = ImageDraw.Draw(canvas)
+
+    margin = 40
+    content_w = width - margin * 2
+
+    # ---------------------------------------------------------------- #
+    # Верхняя "стеклянная" панель — редкость + событие
+    # ---------------------------------------------------------------- #
+    top_panel_h = 62
+    canvas = _glass_panel(canvas, (margin, margin, width - margin, margin + top_panel_h), radius=22, fill_alpha=55)
+    draw = ImageDraw.Draw(canvas)
+
+    rarity_emoji = RARITY_EMOJI.get(slug, "◆")
+    rarity_text = rarity_label_localized(lang, slug)
+    badge_font = get_font(26, "semibold")
+    draw.text(
+        (margin + 24, margin + top_panel_h / 2), f"{rarity_emoji}  {rarity_text}",
+        anchor="lm", font=badge_font, fill=(255, 255, 255, 245),
+    )
+    if item.origin:
+        origin_font = get_font(20, "medium")
+        origin_text = f"🎁 {item.origin}"
+        bbox = draw.textbbox((0, 0), origin_text, font=origin_font)
+        otw = bbox[2] - bbox[0]
+        max_origin_w = content_w - 260
+        if otw > max_origin_w:
+            while otw > max_origin_w and len(origin_text) > 4:
+                origin_text = origin_text[:-2]
+                bbox = draw.textbbox((0, 0), origin_text + "…", font=origin_font)
+                otw = bbox[2] - bbox[0]
+            origin_text = origin_text.rstrip() + "…"
+        draw.text(
+            (width - margin - 24, margin + top_panel_h / 2), origin_text,
+            anchor="rm", font=origin_font, fill=(230, 230, 240, 220),
+        )
+
+    # ---------------------------------------------------------------- #
+    # Центральная зона: крупная стеклянная панель под изображение предмета
+    # ---------------------------------------------------------------- #
+    img_panel_top = margin + top_panel_h + 20
+    img_panel_bottom = img_panel_top + 340
+    canvas = _glass_panel(
+        canvas, (margin, img_panel_top, width - margin, img_panel_bottom),
+        radius=32, fill_alpha=38, blur_radius=22,
+    )
+    draw = ImageDraw.Draw(canvas)
+
+    item_img = download_item_image(item)
+    panel_center_x = width // 2
+    panel_center_y = (img_panel_top + img_panel_bottom) // 2
+
     if item_img:
-        max_size = 320   # увеличенный размер
+        max_size = 300
         ratio = min(max_size / item_img.width, max_size / item_img.height, 1.0)
-        new_w = int(item_img.width * ratio)
-        new_h = int(item_img.height * ratio)
+        new_w = max(1, int(item_img.width * ratio))
+        new_h = max(1, int(item_img.height * ratio))
         item_img = item_img.resize((new_w, new_h), Image.LANCZOS)
+
+        # мягкая тень под предметом для глубины
+        shadow = Image.new("RGBA", (new_w + 60, new_h + 60), (0, 0, 0, 0))
+        sdraw = ImageDraw.Draw(shadow)
+        sdraw.ellipse([20, new_h - 10, new_w + 40, new_h + 50], fill=(0, 0, 0, 110))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(18))
+        canvas.paste(
+            shadow,
+            (panel_center_x - (new_w + 60) // 2, panel_center_y - new_h // 2 - 10),
+            shadow,
+        )
+        canvas.paste(
+            item_img,
+            (panel_center_x - new_w // 2, panel_center_y - new_h // 2),
+            item_img,
+        )
     else:
-        item_img = Image.new("RGBA", (200, 200), (255, 255, 255, 0))
-        draw_stub = ImageDraw.Draw(item_img)
-        draw_stub.text((60, 50), "?", fill=(200, 200, 200), font=get_font(100))
+        stub_font = get_font(90, "bold")
+        draw = ImageDraw.Draw(canvas)
+        draw.text(
+            (panel_center_x, panel_center_y), "🖼", anchor="mm", font=get_font(80, "regular"),
+            fill=(255, 255, 255, 130),
+        )
+        draw.text(
+            (panel_center_x, panel_center_y + 70), "нет фото" if lang == "ru" else "no image",
+            anchor="mm", font=get_font(22, "medium"), fill=(255, 255, 255, 150),
+        )
 
-    item_x = (width - item_img.width) // 2
-    item_y = 210 - item_img.height // 2   # опустили ниже
-    img.paste(item_img, (item_x, item_y), item_img)
+    draw = ImageDraw.Draw(canvas)
 
-    # ---- ВАЖНО: пересоздаём объект ImageDraw после всех вставок ----
-    draw = ImageDraw.Draw(img)
-
-    # Текст
-    title_font = get_font(38, bold=True)
-    value_font = get_font(36, bold=True)
-    detail_font = get_font(22, bold=False)
-
+    # ---------------------------------------------------------------- #
+    # Панель с названием предмета — с гарантированным автопереносом,
+    # чтобы длинные имена никогда не выходили за края изображения.
+    # ---------------------------------------------------------------- #
     name_en = item.name or "???"
     name_ru = get_ru_name(item.name) if (lang == "ru" and item.name) else ""
-    title = f"{name_en} / {name_ru}" if name_ru and name_ru != name_en else name_en
+    if name_ru and normalize_text(name_ru) != normalize_text(name_en):
+        title_text = f"{name_en} · {name_ru}"
+    else:
+        title_text = name_en
+
+    title_panel_top = img_panel_bottom + 18
+    title_max_w = content_w - 56
+    title_font, title_lines = _fit_font_and_wrap(
+        title_text, title_max_w, max_lines=2, start_size=40, min_size=24,
+        weight="extrabold", draw=draw,
+    )
+    line_h = int(title_font.size * 1.22)
+    title_panel_h = 28 + line_h * len(title_lines) + 22
+
+    canvas = _glass_panel(
+        canvas, (margin, title_panel_top, width - margin, title_panel_top + title_panel_h),
+        radius=26, fill_alpha=50,
+    )
+    draw = ImageDraw.Draw(canvas)
+
+    ty = title_panel_top + 24
+    for line in title_lines:
+        _draw_text_with_shadow(
+            draw, (width / 2, ty), line, title_font,
+            fill=(255, 255, 255, 255), anchor="ma", shadow_alpha=150,
+        )
+        ty += line_h
+
+    # ---------------------------------------------------------------- #
+    # Панель со стоимостью — крупно, акцентным цветом редкости
+    # ---------------------------------------------------------------- #
+    value_panel_top = title_panel_top + title_panel_h + 16
+    value_panel_h = 100
+    canvas = _glass_panel(
+        canvas, (margin, value_panel_top, width - margin, value_panel_top + value_panel_h),
+        radius=26, fill_alpha=48,
+    )
+    draw = ImageDraw.Draw(canvas)
+
+    value_label = t(lang, "value_label").split(" ", 1)[-1] if " " in t(lang, "value_label") else t(lang, "value_label")
+    label_font = get_font(19, "medium")
+    draw.text(
+        (width / 2, value_panel_top + 22), value_label.upper(), anchor="ma",
+        font=label_font, fill=(230, 230, 240, 190),
+    )
 
     value_str = item.value_display or "N/A"
-    rarity = item.rarity or "???"
-    stability = localized_stability(lang, item.stability) if item.stability else "???"
+    value_text = f"⛁ {value_str}"
+    value_font, value_lines = _fit_font_and_wrap(
+        value_text, content_w - 80, max_lines=1, start_size=46, min_size=26,
+        weight="extrabold", draw=draw,
+    )
+    _draw_text_with_shadow(
+        draw, (width / 2, value_panel_top + 46), value_lines[0], value_font,
+        fill=accent_rgba, anchor="ma", shadow_alpha=160,
+    )
 
-    fill_white = (255, 255, 255, 255)
-    fill_light = (220, 220, 220, 255)
-    fill_yellow = (255, 215, 0, 255)
+    # ---------------------------------------------------------------- #
+    # Нижняя панель — стабильность (с цветным индикатором)
+    # ---------------------------------------------------------------- #
+    stability_panel_top = value_panel_top + value_panel_h + 16
+    stability_panel_h = 64
+    stability_panel_bottom = min(stability_panel_top + stability_panel_h, height - margin)
+    canvas = _glass_panel(
+        canvas, (margin, stability_panel_top, width - margin, stability_panel_bottom),
+        radius=22, fill_alpha=45,
+    )
+    draw = ImageDraw.Draw(canvas)
 
-    # Тень + текст заголовка
-    draw.text((width//2 + 2, 22), title, anchor="ma", font=title_font, fill=(0,0,0,120))
-    draw.text((width//2, 20), title, anchor="ma", font=title_font, fill=fill_white)
+    stability_text = localized_stability(lang, item.stability) if item.stability else t(lang, "unknown_stability")
+    stab_color = STABILITY_COLORS.get(normalize_text(item.stability).replace(" ", ""), None)
+    # normalize_text уже убрал пробелы — сопоставим по исходному ключу отдельно
+    stab_key = (item.stability or "").strip().lower()
+    stab_color = STABILITY_COLORS.get(stab_key, DEFAULT_STABILITY_COLOR)
 
-    # Значение
-    draw.text((width//2 + 2, 432), f"Supreme: {value_str}", anchor="ma", font=value_font, fill=(0,0,0,120))
-    draw.text((width//2, 430), f"Supreme: {value_str}", anchor="ma", font=value_font, fill=fill_yellow)
+    dot_r = 8
+    dot_cy = (stability_panel_top + stability_panel_bottom) / 2
+    dot_cx = margin + 30
+    draw.ellipse(
+        [dot_cx - dot_r, dot_cy - dot_r, dot_cx + dot_r, dot_cy + dot_r],
+        fill=(*stab_color, 255),
+    )
+    stab_font = get_font(22, "semibold")
+    draw.text(
+        (dot_cx + 20, dot_cy), stability_text, anchor="lm", font=stab_font,
+        fill=(255, 255, 255, 240),
+    )
 
-    # Редкость и стабильность
-    draw.text((width//2 + 1, 491), f"{rarity}  ·  {stability}", anchor="ma", font=detail_font, fill=(0,0,0,100))
-    draw.text((width//2, 490), f"{rarity}  ·  {stability}", anchor="ma", font=detail_font, fill=fill_light)
+    # брендинг справа
+    brand_font = get_font(18, "medium")
+    draw.text(
+        (width - margin - 24, dot_cy), "MM2 Values", anchor="rm", font=brand_font,
+        fill=(255, 255, 255, 140),
+    )
 
     bio = io.BytesIO()
-    img.save(bio, format="PNG")
+    canvas.convert("RGB").save(bio, format="JPEG", quality=92)
     bio.seek(0)
     return bio
-
-# --------------------------------------------------------------------------- #
-# Обработчики Telegram
-# --------------------------------------------------------------------------- #
-
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    lang = get_user_lang(update.effective_user.id)
-    await update.message.reply_text(t(lang, "start"), parse_mode=ParseMode.HTML)
-
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    lang = get_user_lang(update.effective_user.id)
-    await update.message.reply_text(t(lang, "help"))
-
-async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    lang = get_user_lang(update.effective_user.id)
-    buttons = [
-        [InlineKeyboardButton(f"🇷🇺 {SUPPORTED_LANGS['ru']}", callback_data="setlang:ru")],
-        [InlineKeyboardButton(f"🇬🇧 {SUPPORTED_LANGS['en']}", callback_data="setlang:en")],
-    ]
-    await update.message.reply_text(
-        t(lang, "settings_title"), reply_markup=InlineKeyboardMarkup(buttons)
-    )
-
-async def on_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    _, lang_code = query.data.split(":", 1)
-    if lang_code not in SUPPORTED_LANGS:
-        return
-    set_user_lang(query.from_user.id, lang_code)
-    await query.edit_message_text(
-        t(lang_code, "settings_saved", lang_name=SUPPORTED_LANGS[lang_code])
-    )
-
-async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    lang = get_user_lang(update.effective_user.id)
-    count = cache.size
-    last_update = (
-        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cache.last_updated))
-        if cache.last_updated
-        else t(lang, "never")
-    )
-    if cache.last_error:
-        text = t(lang, "status_report", count=count, last_update=last_update, error=cache.last_error)
-    else:
-        text = t(lang, "status_report_ok", count=count, last_update=last_update)
-    await update.message.reply_text(text)
-
-async def on_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.text:
-        return
-
-    query_text = update.message.text.strip()
-    if not query_text or query_text.startswith("/"):
-        return
-
-    user_id = update.effective_user.id
-    lang = get_user_lang(user_id)
-
-    if cache.size == 0:
-        await update.message.reply_text(t(lang, "cache_empty"))
-        return
-
-    results = cache.search(query_text, limit=1)
-    if not results:
-        await update.message.reply_text(t(lang, "not_found", query=query_text))
-        return
-
-    item, _ = results[0]
-
-    # Формируем полную подпись
-    caption = format_item_caption(item, lang)
-
-    try:
-        img_bio = create_item_image(item, lang)
-        await update.message.reply_photo(
-            photo=img_bio,
-            caption=caption,
-            parse_mode=ParseMode.HTML,
-        )
-    except Exception as e:
-        logger.exception("Ошибка при создании изображения: %s", e)
-        await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
-
-def format_item_caption(item: Item, lang: str) -> str:
-    name_en = html.escape(item.name) if item.name else "???"
-    if lang == "ru":
-        name_ru = html.escape(get_ru_name(item.name)) if item.name else "???"
-        title_line = f"<b>{name_en}</b> ({name_ru})"
-    else:
-        title_line = f"<b>{name_en}</b>"
-    stability_text = localized_stability(lang, item.stability) if item.stability else "???"
-    value_disp = item.value_display if item.value_display else "N/A"
-    rarity = html.escape(item.rarity) if item.rarity else "???"
-    lines = [
-        title_line,
-        "",
-        f"<i>{t(lang, 'value_label')}:</i>",
-        f"Supreme: <b>{value_disp}</b>",
-        "",
-        f"{t(lang, 'status_label')}: <b>{rarity}</b>",
-        f"{t(lang, 'stability_label')}: <b>{html.escape(stability_text)}</b>",
-    ]
-    return "\n".join(lines)
-
-async def cmd_setrefresh(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        lang = get_user_lang(user_id)
-        await update.message.reply_text(t(lang, "admin_only"))
-        return
-
-    lang = get_user_lang(user_id)
-
-    if not context.args:
-        current_days = get_refresh_interval_days()
-        await update.message.reply_text(t(lang, "admin_set_refresh", days=current_days))
-        return
-
-    try:
-        days = int(context.args[0])
-        if days < 1 or days > 90:
-            raise ValueError
-    except ValueError:
-        await update.message.reply_text(t(lang, "admin_refresh_invalid"))
-        return
-
-    set_refresh_interval_days(days)
-    scheduler = context.application.bot_data.get("scheduler")
-    if scheduler:
-        seconds = days * 86400
-        scheduler.reschedule_job("refresh_values_cache", trigger="interval", seconds=seconds)
-        logger.info("Интервал обновления изменён на %d дней", days)
-    else:
-        logger.error("Планировщик не найден в bot_data")
-
-    await update.message.reply_text(t(lang, "admin_refresh_updated", days=days))
-
-async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    error = context.error
-    if isinstance(error, Conflict):
-        logger.error(
-            "Обнаружен конфликт (Conflict): другой экземпляр бота активен "
-            "(или уже идёт перезапуск). Ничего не делаем — polling сам "
-            "переподключится, либо это сделает внешний retry-цикл в main()."
-        )
-    elif isinstance(error, NetworkError):
-        logger.error("Сетевая ошибка: %s", error)
-    elif isinstance(error, TimedOut):
-        logger.error("Таймаут запроса к Telegram API: %s", error)
-    else:
-        logger.error("Ошибка при обработке апдейта: %s", error, exc_info=error)
-
-def reset_webhook_and_cleanup():
-    import requests as req
-    try:
-        resp = req.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
-        if resp.status_code == 200:
-            logger.info("Вебхук успешно удалён")
-        else:
-            logger.warning(f"Не удалось удалить вебхук: {resp.text}")
-        resp = req.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset=-1&timeout=1")
-        if resp.status_code == 200:
-            logger.info("Pending updates очищены")
-        else:
-            logger.warning(f"Не удалось очистить pending updates: {resp.text}")
-    except Exception as e:
-        logger.error(f"Ошибка при очистке вебхука: {e}")
-
-# --------------------------------------------------------------------------- #
-# HTTP-сервер для health-check (Render Web Service)
-# --------------------------------------------------------------------------- #
-
-class _HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self) -> None:
-        body = b"OK"
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, format: str, *args) -> None:
-        pass
-
-def start_health_check_server(port: int) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer(("0.0.0.0", port), _HealthCheckHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    logger.info("Health-check HTTP-сервер запущен на 0.0.0.0:%d", port)
-    return server
-
-# --------------------------------------------------------------------------- #
-# Главный блок
-# --------------------------------------------------------------------------- #
-
-def main() -> None:
-    start_health_check_server(PORT)
-
-    logger.info("Очистка вебхука и pending updates...")
-    reset_webhook_and_cleanup()
-
-    init_db()
-
-    threading.Thread(target=cache.refresh, daemon=True).start()
-
-    interval_days = get_refresh_interval_days()
-    interval_seconds = interval_days * 86400
-
-    scheduler = BackgroundScheduler(timezone="UTC")
-    scheduler.add_job(
-        cache.refresh,
-        "interval",
-        seconds=interval_seconds,
-        id="refresh_values_cache",
-        max_instances=1,
-        coalesce=True,
-    )
-    scheduler.start()
-
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .connect_timeout(30)
-        .read_timeout(30)
-        .write_timeout(30)
-        .pool_timeout(30)
-        .build()
-    )
-    application.bot_data["scheduler"] = scheduler
-
-    application.add_handler(CommandHandler("start", cmd_start))
-    application.add_handler(CommandHandler("help", cmd_help))
-    application.add_handler(CommandHandler("settings", cmd_settings))
-    application.add_handler(CommandHandler("status", cmd_status))
-    application.add_handler(CommandHandler("setrefresh", cmd_setrefresh))
-    application.add_handler(CallbackQueryHandler(on_settings_callback, pattern=r"^setlang:"))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
-    application.add_error_handler(on_error)
-
-    def signal_handler(signum, frame):
-        logger.info("Получен сигнал завершения, останавливаем бота...")
-        if scheduler.running:
-            scheduler.shutdown(wait=False)
-        sys.exit(0)
-
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
-
-    logger.info("Бот запущен, начинаю polling...")
-
-    max_retries = 5
-    retry_count = 0
-    while retry_count < max_retries:
-        try:
-            application.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,
-                close_loop=False
-            )
-            break
-        except Conflict:
-            retry_count += 1
-            logger.warning(f"Конфликт при запуске (попытка {retry_count}/{max_retries}). Очистка и повтор через 10 сек...")
-            reset_webhook_and_cleanup()
-            time.sleep(10)
-        except Exception as e:
-            logger.error(f"Критическая ошибка: {e}", exc_info=True)
-            break
-
-    if retry_count >= max_retries:
-        logger.error("Не удалось запустить бота после максимального количества попыток")
-
-if __name__ == "__main__":
-    main()
