@@ -1721,6 +1721,412 @@ def create_item_image(item: Item, lang: str) -> io.BytesIO:
     bio.seek(0)
     return bio
 
+# --------------------------------------------------------------------------- #
+# Вспомогательные функции для хэндлеров
+# --------------------------------------------------------------------------- #
+
+LIST_PAGE_SIZE = 8
+
+def _filters_summary_value(lang: str, filters: ItemFilters, kind: str) -> str:
+    if kind == "min":
+        return str(filters.min_value) if filters.min_value else "0"
+    if kind == "max":
+        return t(lang, "filters_unlimited") if filters.max_value == -1 else str(filters.max_value)
+    if kind == "rarity":
+        if filters.rarity_slug == "all":
+            return t(lang, "filters_all")
+        return rarity_label_localized(lang, filters.rarity_slug)
+    if kind == "stability":
+        if filters.stability_key == "all":
+            return t(lang, "filters_all")
+        return stability_label(lang, filters.stability_key)
+    return ""
+
+def build_filters_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(
+            t(lang, "filters_btn_min", value=_filters_summary_value(lang, filters, "min")),
+            callback_data="filt:ask_min",
+        )],
+        [InlineKeyboardButton(
+            t(lang, "filters_btn_max", value=_filters_summary_value(lang, filters, "max")),
+            callback_data="filt:ask_max",
+        )],
+        [InlineKeyboardButton(
+            t(lang, "filters_btn_rarity", value=_filters_summary_value(lang, filters, "rarity")),
+            callback_data="filt:rarity_menu",
+        )],
+        [InlineKeyboardButton(
+            t(lang, "filters_btn_stability", value=_filters_summary_value(lang, filters, "stability")),
+            callback_data="filt:stability_menu",
+        )],
+        [
+            InlineKeyboardButton(t(lang, "filters_btn_reset"), callback_data="filt:reset"),
+            InlineKeyboardButton(t(lang, "filters_btn_apply"), callback_data="filt:apply"),
+        ],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+def build_rarity_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(
+        ("✅ " if filters.rarity_slug == "all" else "") + t(lang, "filters_option_all"),
+        callback_data="filt:set_rarity:all",
+    )]]
+    for slug, _label, emoji in CATEGORIES:
+        mark = "✅ " if filters.rarity_slug == slug else ""
+        rows.append([InlineKeyboardButton(
+            f"{mark}{emoji} {rarity_label_localized(lang, slug)}",
+            callback_data=f"filt:set_rarity:{slug}",
+        )])
+    rows.append([InlineKeyboardButton("⬅️", callback_data="filt:back")])
+    return InlineKeyboardMarkup(rows)
+
+def build_stability_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(
+        ("✅ " if filters.stability_key == "all" else "") + t(lang, "filters_option_all"),
+        callback_data="filt:set_stability:all",
+    )]]
+    for key, ru_label, emoji in STABILITY_FILTER_OPTIONS:
+        label = ru_label if lang == "ru" else key.title()
+        mark = "✅ " if filters.stability_key == key else ""
+        rows.append([InlineKeyboardButton(
+            f"{mark}{emoji} {label}",
+            callback_data=f"filt:set_stability:{key}",
+        )])
+    rows.append([InlineKeyboardButton("⬅️", callback_data="filt:back")])
+    return InlineKeyboardMarkup(rows)
+
+def build_list_keyboard(lang: str, page: int, total_pages: int) -> InlineKeyboardMarkup:
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"list:page:{page - 1}"))
+    nav.append(InlineKeyboardButton(
+        t(lang, "list_nav_page", page=page + 1, total=max(total_pages, 1)),
+        callback_data="list:noop",
+    ))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"list:page:{page + 1}"))
+    return InlineKeyboardMarkup([nav])
+
+def render_list_page_text(lang: str, items: list[Item], page: int, total_pages: int) -> str:
+    start = page * LIST_PAGE_SIZE
+    page_items = items[start:start + LIST_PAGE_SIZE]
+    lines = [t(lang, "list_title"), ""]
+    for i, item in enumerate(page_items, start=start + 1):
+        emoji = RARITY_EMOJI.get(item.category_slug, "•")
+        value = item.value_display or "N/A"
+        lines.append(f"{i}. {emoji} <b>{html.escape(item.name)}</b> — ⛁ {value}")
+    return "\n".join(lines)
+
+async def send_item_card(update: Update, context: ContextTypes.DEFAULT_TYPE, item: Item, lang: str) -> None:
+    chat_id = update.effective_chat.id
+    try:
+        photo = create_item_image(item, lang)
+        caption = None
+        await context.bot.send_photo(chat_id=chat_id, photo=photo, caption=caption, parse_mode=ParseMode.HTML)
+    except Exception:
+        logger.exception("Не удалось сгенерировать/отправить карточку предмета '%s'", item.name)
+        name_ru = get_ru_name(item.name) if lang == "ru" else ""
+        title = f"{item.name} · {name_ru}" if name_ru and normalize_text(name_ru) != normalize_text(item.name) else item.name
+        text = (
+            f"<b>{html.escape(title)}</b>\n"
+            f"{t(lang, 'value_label')}: ⛁ {item.value_display or 'N/A'}\n"
+            f"{t(lang, 'stability_label')}: {localized_stability(lang, item.stability) if item.stability else t(lang, 'unknown_stability')}"
+        )
+        await context.bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
+
+# --------------------------------------------------------------------------- #
+# Хэндлеры команд
+# --------------------------------------------------------------------------- #
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    lang = get_user_lang(update.effective_user.id)
+    await update.message.reply_text(t(lang, "start"), parse_mode=ParseMode.HTML)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    lang = get_user_lang(update.effective_user.id)
+    await update.message.reply_text(t(lang, "help"), parse_mode=ParseMode.HTML)
+
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    lang = get_user_lang(update.effective_user.id)
+    rows = [
+        [InlineKeyboardButton(name, callback_data=f"setlang:{code}")]
+        for code, name in SUPPORTED_LANGS.items()
+    ]
+    await update.message.reply_text(
+        t(lang, "settings_title"), parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    lang = get_user_lang(update.effective_user.id)
+    count = cache.size
+    last_update = (
+        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cache.last_updated))
+        if cache.last_updated else t(lang, "never")
+    )
+    if cache.last_error:
+        text = t(lang, "status_report", count=count, last_update=last_update, error=cache.last_error)
+    else:
+        text = t(lang, "status_report_ok", count=count, last_update=last_update)
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+async def setrefresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    lang = get_user_lang(update.effective_user.id)
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text(t(lang, "admin_only"))
+        return
+    args = context.args
+    if not args:
+        days = get_refresh_interval_days()
+        await update.message.reply_text(t(lang, "admin_set_refresh", days=days))
+        return
+    try:
+        days = int(args[0])
+        if not (1 <= days <= 90):
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text(t(lang, "admin_refresh_invalid"))
+        return
+    set_refresh_interval_days(days)
+    await update.message.reply_text(t(lang, "admin_refresh_updated", days=days))
+
+async def filters_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    lang = get_user_lang(user_id)
+    context.user_data.pop("awaiting_filter_input", None)
+    filters_obj = get_user_filters(user_id)
+    await update.message.reply_text(
+        t(lang, "filters_title"), parse_mode=ParseMode.HTML,
+        reply_markup=build_filters_keyboard(lang, filters_obj),
+    )
+
+async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    lang = get_user_lang(user_id)
+    if cache.size == 0:
+        await update.message.reply_text(t(lang, "cache_empty"))
+        return
+    filters_obj = get_user_filters(user_id)
+    items = cache.all_items(filters_obj)
+    if not items:
+        await update.message.reply_text(t(lang, "list_empty"), parse_mode=ParseMode.HTML)
+        return
+    total_pages = max(1, math.ceil(len(items) / LIST_PAGE_SIZE))
+    page = 0
+    text = render_list_page_text(lang, items, page, total_pages)
+    await update.message.reply_text(
+        text, parse_mode=ParseMode.HTML,
+        reply_markup=build_list_keyboard(lang, page, total_pages),
+    )
+
+async def search_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = update.effective_user.id
+    lang = get_user_lang(user_id)
+    query = (update.message.text or "").strip()
+    if not query:
+        return
+
+    # Если ждём числовой ввод для фильтра min/max — обрабатываем отдельно.
+    awaiting = context.user_data.get("awaiting_filter_input")
+    if awaiting in ("min", "max"):
+        try:
+            value = int(query.strip())
+        except ValueError:
+            await update.message.reply_text(t(lang, "filters_invalid_number"))
+            return
+        filters_obj = get_user_filters(user_id)
+        if awaiting == "min":
+            if value < 0:
+                await update.message.reply_text(t(lang, "filters_invalid_negative"))
+                return
+            if filters_obj.max_value != -1 and value > filters_obj.max_value:
+                await update.message.reply_text(t(lang, "filters_invalid_range"))
+                return
+            filters_obj.min_value = value
+        else:
+            if value != -1 and value < 0:
+                await update.message.reply_text(t(lang, "filters_invalid_negative"))
+                return
+            if value != -1 and value < filters_obj.min_value:
+                await update.message.reply_text(t(lang, "filters_invalid_range"))
+                return
+            filters_obj.max_value = value
+        set_user_filters(user_id, filters_obj)
+        context.user_data.pop("awaiting_filter_input", None)
+        await update.message.reply_text(
+            t(lang, "filters_title"), parse_mode=ParseMode.HTML,
+            reply_markup=build_filters_keyboard(lang, filters_obj),
+        )
+        return
+
+    if cache.size == 0:
+        await update.message.reply_text(t(lang, "cache_empty"))
+        return
+
+    filters_obj = get_user_filters(user_id)
+    results = cache.search(query, limit=5, filters=filters_obj)
+    if not results:
+        await update.message.reply_text(
+            t(lang, "not_found", query=html.escape(query)), parse_mode=ParseMode.HTML,
+        )
+        return
+
+    best_item, _score = results[0]
+    await send_item_card(update, context, best_item, lang)
+
+# --------------------------------------------------------------------------- #
+# Хэндлер инлайн-кнопок
+# --------------------------------------------------------------------------- #
+
+async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    user_id = update.effective_user.id
+    lang = get_user_lang(user_id)
+    data = query.data or ""
+
+    try:
+        if data.startswith("setlang:"):
+            new_lang = data.split(":", 1)[1]
+            if new_lang in SUPPORTED_LANGS:
+                set_user_lang(user_id, new_lang)
+                lang = new_lang
+                await query.answer()
+                await query.edit_message_text(
+                    t(lang, "settings_saved", lang_name=SUPPORTED_LANGS[new_lang]),
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                await query.answer()
+            return
+
+        if data.startswith("filt:"):
+            action = data[len("filt:"):]
+            filters_obj = get_user_filters(user_id)
+
+            if action == "ask_min":
+                context.user_data["awaiting_filter_input"] = "min"
+                await query.answer()
+                await query.edit_message_text(t(lang, "filters_ask_min"), parse_mode=ParseMode.HTML)
+                return
+
+            if action == "ask_max":
+                context.user_data["awaiting_filter_input"] = "max"
+                await query.answer()
+                await query.edit_message_text(t(lang, "filters_ask_max"), parse_mode=ParseMode.HTML)
+                return
+
+            if action == "rarity_menu":
+                await query.answer()
+                await query.edit_message_text(
+                    t(lang, "filters_rarity_title"), parse_mode=ParseMode.HTML,
+                    reply_markup=build_rarity_menu_keyboard(lang, filters_obj),
+                )
+                return
+
+            if action == "stability_menu":
+                await query.answer()
+                await query.edit_message_text(
+                    t(lang, "filters_stability_title"), parse_mode=ParseMode.HTML,
+                    reply_markup=build_stability_menu_keyboard(lang, filters_obj),
+                )
+                return
+
+            if action.startswith("set_rarity:"):
+                slug = action.split(":", 1)[1]
+                filters_obj.rarity_slug = slug
+                set_user_filters(user_id, filters_obj)
+                await query.answer(t(lang, "filters_saved"))
+                await query.edit_message_text(
+                    t(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                    reply_markup=build_filters_keyboard(lang, filters_obj),
+                )
+                return
+
+            if action.startswith("set_stability:"):
+                key = action.split(":", 1)[1]
+                filters_obj.stability_key = key
+                set_user_filters(user_id, filters_obj)
+                await query.answer(t(lang, "filters_saved"))
+                await query.edit_message_text(
+                    t(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                    reply_markup=build_filters_keyboard(lang, filters_obj),
+                )
+                return
+
+            if action == "reset":
+                reset_user_filters(user_id)
+                context.user_data.pop("awaiting_filter_input", None)
+                filters_obj = get_user_filters(user_id)
+                await query.answer(t(lang, "filters_saved"))
+                await query.edit_message_text(
+                    t(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                    reply_markup=build_filters_keyboard(lang, filters_obj),
+                )
+                return
+
+            if action == "apply":
+                context.user_data.pop("awaiting_filter_input", None)
+                await query.answer(t(lang, "filters_applied"))
+                await query.edit_message_text(
+                    t(lang, "filters_applied"), parse_mode=ParseMode.HTML,
+                )
+                return
+
+            if action == "back":
+                await query.answer()
+                await query.edit_message_text(
+                    t(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                    reply_markup=build_filters_keyboard(lang, filters_obj),
+                )
+                return
+
+            await query.answer()
+            return
+
+        if data.startswith("list:"):
+            action = data[len("list:"):]
+            if action == "noop":
+                await query.answer()
+                return
+            if action.startswith("page:"):
+                page = int(action.split(":", 1)[1])
+                filters_obj = get_user_filters(user_id)
+                items = cache.all_items(filters_obj)
+                total_pages = max(1, math.ceil(len(items) / LIST_PAGE_SIZE))
+                page = max(0, min(page, total_pages - 1))
+                text = render_list_page_text(lang, items, page, total_pages)
+                await query.answer()
+                await query.edit_message_text(
+                    text, parse_mode=ParseMode.HTML,
+                    reply_markup=build_list_keyboard(lang, page, total_pages),
+                )
+                return
+            await query.answer()
+            return
+
+        await query.answer()
+    except BadRequest as e:
+        # Например, "message is not modified" при повторном нажатии — безопасно игнорируем.
+        logger.warning("BadRequest в callback_query_handler: %s", e)
+        try:
+            await query.answer()
+        except Exception:
+            pass
+    except Exception:
+        logger.exception("Ошибка в обработке callback_query")
+        try:
+            await query.answer()
+        except Exception:
+            pass
+
+# --------------------------------------------------------------------------- #
+# Глобальный обработчик ошибок
+# --------------------------------------------------------------------------- #
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error("Необработанное исключение при обработке апдейта", exc_info=context.error)
+
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -1749,12 +2155,37 @@ if __name__ == "__main__":
     # 3. Запускаем HTTP-сервер для Render в отдельном потоке
     threading.Thread(target=run_health_check_server, daemon=True).start()
 
-    # 4. Настраиваем и запускаем Telegram бота
+    # 4. Планировщик периодического обновления кэша
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        cache.refresh,
+        "interval",
+        days=get_refresh_interval_days(),
+        id="cache_refresh",
+    )
+    scheduler.start()
+
+    # 5. Настраиваем и запускаем Telegram бота
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Добавление хэндлеров...
-    # application.add_handler(CommandHandler("start", start_command))
-    # ...
+    # Команды
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("settings", settings_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("setrefresh", setrefresh_command))
+    application.add_handler(CommandHandler("filters", filters_command))
+    application.add_handler(CommandHandler("list", list_command))
+
+    # Инлайн-кнопки
+    application.add_handler(CallbackQueryHandler(callback_query_handler))
+
+    # Текстовые сообщения — поиск предмета (и ввод min/max для фильтров)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_text_message))
+
+    # Глобальный обработчик ошибок, чтобы одно необработанное исключение
+    # не роняло цикл polling целиком.
+    application.add_error_handler(error_handler)
 
     logger.info("Запуск Telegram бота (polling)...")
     application.run_polling(drop_pending_updates=True)
