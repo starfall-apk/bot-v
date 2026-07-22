@@ -615,6 +615,12 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
                     if normalized and normalized not in image_candidates:
                         image_candidates.append(normalized)
 
+        media_dir = f"{BASE_URL}/media/mm2{slug}/"
+        for guess in guess_image_filenames(display_name):
+            candidate = f"{media_dir}{guess}.png"
+            if candidate not in image_candidates:
+                image_candidates.append(candidate)
+
         image_url = image_candidates[0] if image_candidates else ""
 
         origin = card.get("data-event", "")
@@ -743,14 +749,20 @@ class ValuesCache:
                 return []
 
         best_by_idx: dict[int, float] = {}
-        query_lower = query.lower()
-        chroma_bonus = any(word in query_lower for word in ("chroma", "хрома", "c.", "c "))
+
+        CHROMA_WORDS = {"chroma", "хрома", "c"}
+
+        def _has_chroma_word(norm_text: str) -> bool:
+            tokens = norm_text.split()
+            return bool(tokens) and tokens[0] in CHROMA_WORDS
 
         for variant in variants:
             v_norm = normalize_text(variant)
             v_sorted = token_sorted_text(variant)
             if not v_norm:
                 continue
+
+            query_has_chroma = _has_chroma_word(v_norm)
 
             for entry in index:
                 if allowed_idx is not None and entry.item_idx not in allowed_idx:
@@ -770,9 +782,14 @@ class ValuesCache:
                     if len_diff > 3 and score < 95.0:
                         score = max(0.0, score - len_diff * 3.0)
 
-                # Бонус за хрому
-                if chroma_bonus and items[entry.item_idx].category_slug == "chromas":
-                    score = min(100.0, score + 30.0)
+                # Штраф за несовпадение наличия "chroma/хрома" между запросом и записью:
+                # если пользователь явно ищет хрома-версию, а запись — не хрома (или наоборот),
+                # это разные предметы и совпадение остальных слов не должно перевешивать это.
+                entry_has_chroma = _has_chroma_word(entry.key_norm)
+                if query_has_chroma != entry_has_chroma:
+                    score = max(0.0, score - 40.0)
+                elif query_has_chroma and entry_has_chroma:
+                    score = min(100.0, score + 5.0)
 
                 if score > best_by_idx.get(entry.item_idx, -1):
                     best_by_idx[entry.item_idx] = float(score)
@@ -1431,15 +1448,17 @@ def _try_download_single(url: str) -> Optional[Image.Image]:
         _url_status_cache[url] = False
         return None
 
-def refresh_item_image_url(item: Item) -> Optional[str]:
-    """Делает запрос к ScrapingAnt для страницы категории предмета и ищет его картинку."""
+def refresh_item_image_candidates(item: Item) -> list[str]:
+    """Делает запрос к ScrapingAnt для страницы категории предмета и собирает ВСЕ кандидаты его картинки
+    (реальный src со страницы + все угаданные варианты имени файла), а не только первый попавшийся."""
     slug = item.category_slug
     target_url = f"{BASE_URL}/mm2/{slug}"
     api_url = f"https://api.scrapingant.com/v2/general?url={target_url}&x-api-key={SCRAPINGANT_API_KEY}&browser=true"
+    fresh_candidates: list[str] = []
     try:
         resp = requests.get(api_url, timeout=REQUEST_TIMEOUT)
         if resp.status_code != 200:
-            return None
+            return fresh_candidates
         soup = BeautifulSoup(resp.text, "html.parser")
         cards = soup.find_all("div", class_="itemcolumn") or soup.find_all("tr")
         for card in cards:
@@ -1453,19 +1472,25 @@ def refresh_item_image_url(item: Item) -> Optional[str]:
                     name = head.get_text(strip=True)
             if not name or normalize_text(name) != normalize_text(item.name):
                 continue
+
             img_tag = card.find("img", class_="itemimage") or card.find("img")
             if img_tag:
                 for attr in ("src", "data-src", "data-lazy-src"):
                     raw = img_tag.get(attr)
-                    if raw and "N_A" not in raw.upper():
-                        return _normalize_image_src(raw)
-            # fallback-угадывание имени файла
+                    if raw and "N_A" not in raw.upper() and "placeholder" not in raw.lower():
+                        normalized = _normalize_image_src(raw)
+                        if normalized and normalized not in fresh_candidates:
+                            fresh_candidates.append(normalized)
+
+            media_dir = f"{BASE_URL}/media/mm2{slug}/"
             for guess in guess_image_filenames(name):
-                candidate = f"{BASE_URL}/media/mm2{slug}/{guess}.png"
-                return candidate
+                candidate = f"{media_dir}{guess}.png"
+                if candidate not in fresh_candidates:
+                    fresh_candidates.append(candidate)
+            break
     except Exception:
         logger.exception("Не удалось обновить URL изображения для %s", item.name)
-    return None
+    return fresh_candidates
 
 def download_item_image(item: Item) -> Optional[Image.Image]:
     candidates = list(item.image_url_candidates) or ([item.image_url] if item.image_url else [])
@@ -1477,9 +1502,11 @@ def download_item_image(item: Item) -> Optional[Image.Image]:
             state_store.save_known_image_url(normalize_text(item.name), url)
             return img
 
-    # Все кандидаты провалились — пробуем обновить URL через ScrapingAnt
-    fresh_url = refresh_item_image_url(item)
-    if fresh_url:
+    # Все кандидаты провалились — пробуем обновить и перебрать полный список через ScrapingAnt
+    fresh_candidates = refresh_item_image_candidates(item)
+    for fresh_url in fresh_candidates:
+        if fresh_url in candidates:
+            continue  # уже пробовали
         img = _try_download_single(fresh_url)
         if img is not None:
             item.image_url = fresh_url
