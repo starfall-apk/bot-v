@@ -52,13 +52,11 @@ if not BOT_TOKEN:
     )
 
 SCRAPINGANT_API_KEY = os.environ.get("SCRAPINGANT_API_KEY", "2e2075e51d5e4236a474c52c2434d15a")
-DB_PATH = os.environ.get("DB_PATH", "mm2bot_settings.db")
 
 PORT = int(os.environ.get("PORT", "10000"))
 
 BASE_URL = "https://supremevalues.com"
 
-# slug на сайте, отображаемая (англ.) редкость, эмодзи редкости
 CATEGORIES: list[tuple[str, str, str]] = [
     ("godlies", "Godly", "🟡"),
     ("chromas", "Chroma", "🌈"),
@@ -309,7 +307,6 @@ MERGED_COMPOUND_OVERRIDES: dict[str, str] = {
     "traveler's axe": "Топор путешественника",
 }
 
-# Популярные сленговые / дополнительные русские имена для улучшения поиска
 ITEM_ALIASES: dict[str, list[str]] = {
     "icewing": ["ледокрыло", "ледяное крыло", "айсвинг"],
     "icebreaker": ["ледокол", "айсбрекер"],
@@ -618,12 +615,6 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
                     if normalized and normalized not in image_candidates:
                         image_candidates.append(normalized)
 
-        media_dir = f"{BASE_URL}/media/mm2{slug}/"
-        for guess in guess_image_filenames(display_name):
-            candidate = f"{media_dir}{guess}.png"
-            if candidate not in image_candidates:
-                image_candidates.append(candidate)
-
         image_url = image_candidates[0] if image_candidates else ""
 
         origin = card.get("data-event", "")
@@ -752,6 +743,8 @@ class ValuesCache:
                 return []
 
         best_by_idx: dict[int, float] = {}
+        query_lower = query.lower()
+        chroma_bonus = any(word in query_lower for word in ("chroma", "хрома", "c.", "c "))
 
         for variant in variants:
             v_norm = normalize_text(variant)
@@ -763,21 +756,23 @@ class ValuesCache:
                 if allowed_idx is not None and entry.item_idx not in allowed_idx:
                     continue
 
-                # 1. Точное совпадение строки или отсортированного порядка слов
+                score = 0.0
+
                 if v_norm == entry.key_norm or v_sorted == entry.key_sorted:
-                    best_by_idx[entry.item_idx] = 100.0
-                    continue
+                    score = 100.0
+                else:
+                    s1 = fuzz.token_sort_ratio(v_norm, entry.key_norm)
+                    s2 = fuzz.token_set_ratio(v_norm, entry.key_norm)
+                    s3 = fuzz.ratio(v_sorted, entry.key_sorted)
+                    score = max(s1, s2, s3)
 
-                # 2. Нечёткое сравнение токенов
-                s1 = fuzz.token_sort_ratio(v_norm, entry.key_norm)
-                s2 = fuzz.token_set_ratio(v_norm, entry.key_norm)
-                s3 = fuzz.ratio(v_sorted, entry.key_sorted)
-                score = max(s1, s2, s3)
+                    len_diff = abs(len(v_norm) - len(entry.key_norm))
+                    if len_diff > 3 and score < 95.0:
+                        score = max(0.0, score - len_diff * 3.0)
 
-                # Штрафуем разницу в длине, чтобы короткие запросы типа "лед" не перебивали "ледокрыло"
-                len_diff = abs(len(v_norm) - len(entry.key_norm))
-                if len_diff > 3 and score < 95.0:
-                    score = max(0.0, score - len_diff * 3.0)
+                # Бонус за хрому
+                if chroma_bonus and items[entry.item_idx].category_slug == "chromas":
+                    score = min(100.0, score + 30.0)
 
                 if score > best_by_idx.get(entry.item_idx, -1):
                     best_by_idx[entry.item_idx] = float(score)
@@ -818,7 +813,6 @@ class ValuesCache:
         with self._lock:
             return len(self._items)
 
-    # Методы экспорта / импорта для снапшота
     def export_items(self) -> list[dict]:
         with self._lock:
             return [item.to_dict() for item in self._items]
@@ -834,29 +828,6 @@ cache = ValuesCache()
 # --------------------------------------------------------------------------- #
 # Настройки и хранилище состояния (приватный Telegram-канал)
 # --------------------------------------------------------------------------- #
-#
-# Вместо локальной SQLite-базы (которая не переживает передеплой на
-# эфемерных хостингах вроде Render) все 4 "таблицы" из старой версии —
-# user_settings (язык), global_settings (интервал обновления),
-# user_filters (фильтры поиска) и known_images (подтверждённые URL картинок) —
-# хранятся в памяти процесса и периодически сериализуются в единый JSON,
-# который отправляется документом в приватный канал (CHANNEL_ID) и
-# закрепляется там. При старте бот читает закреплённое сообщение и
-# восстанавливает из него состояние.
-#
-# known_images включены в снапшот: без них после каждого передеплоя бот
-# заново перебирал бы кандидатов URL картинок для каждого предмета —
-# это не критично (есть fallback-угадывание имени файла), но лишний трафик
-# и временное отсутствие картинок в /list и карточках того не стоят,
-# раз хранить их — почти бесплатно (несколько КБ текста).
-#
-# Когда сохранять снапшот: не после каждого чиха, а с дебаунсом — любое
-# изменение (смена языка, фильтров, новый known_image, обновление
-# интервала) откладывает сохранение на DEBOUNCE_SECONDS вперёд, повторные
-# изменения дальше откладывают его же. Дополнительно снапшот гарантированно
-# сохраняется сразу после каждого cache.refresh() (так /status и каталог
-# переживут рестарт даже без единого изменения настроек) и при штатном
-# завершении процесса (SIGTERM/SIGINT).
 
 DEFAULT_LANG = "ru"
 SUPPORTED_LANGS = {"ru": "Русский", "en": "English"}
@@ -880,9 +851,9 @@ except ValueError:
 @dataclass
 class ItemFilters:
     min_value: int = 0
-    max_value: int = -1          # -1 = неограниченно
-    rarity_slug: str = "all"     # "all" или slug категории
-    stability_key: str = "all"   # "all" или нормализованный ключ стабильности
+    max_value: int = -1
+    rarity_slug: str = "all"
+    stability_key: str = "all"
 
     @property
     def is_empty(self) -> bool:
@@ -952,12 +923,10 @@ class StateStore:
         self._stop_event = threading.Event()
         self._debounce_thread: Optional[threading.Thread] = None
 
-    # ---- сериализация ---- #
-
     def _to_state_dict(self) -> dict:
         with self._lock:
             return {
-                "version": 2,  # увеличили версию
+                "version": 2,
                 "saved_at": time.time(),
                 "settings": {
                     "refresh_interval_days": self.refresh_interval_days,
@@ -968,7 +937,7 @@ class StateStore:
                 "cache": {
                     "last_updated": cache.last_updated or None,
                     "last_error": cache.last_error,
-                    "items": cache.export_items(),  # список предметов
+                    "items": cache.export_items(),
                 },
             }
 
@@ -988,7 +957,6 @@ class StateStore:
                 str(k): str(v) for k, v in (settings.get("known_images", {}) or {}).items()
             }
 
-        # Восстанавливаем предметы
         raw_items = cache_info.get("items")
         if raw_items:
             cache.load_items(raw_items)
@@ -996,14 +964,7 @@ class StateStore:
             cache.last_updated = cache_info.get("last_updated") or 0.0
             cache.last_error = cache_info.get("last_error")
 
-    # ---- загрузка из канала ---- #
-
     def load_from_channel(self) -> bool:
-        """
-        Пытается восстановить состояние из закреплённого сообщения канала.
-        Возвращает True при успехе, False если в канале ещё нет снапшота
-        или произошла ошибка.
-        """
         api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
         try:
             resp = requests.get(
@@ -1062,10 +1023,7 @@ class StateStore:
         )
         return True
 
-    # ---- сохранение в канал ---- #
-
     def save_to_channel_now(self) -> bool:
-        """Синхронно сериализует текущее состояние и публикует/закрепляет его в канале."""
         state = self._to_state_dict()
 
         tmp_path = None
@@ -1108,11 +1066,6 @@ class StateStore:
                     pin_data,
                 )
 
-            # Старое закреплённое сообщение больше не нужно — не обязательно
-            # удалять (Telegram сам держит только одно закреплённое сообщение
-            # верхним, старые пины просто перестают быть актуальными), поэтому
-            # намеренно не чистим историю канала.
-
             logger.info("Снапшот состояния сохранён и закреплён в канале-хранилище.")
             return True
         except Exception:
@@ -1124,8 +1077,6 @@ class StateStore:
                     os.remove(tmp_path)
                 except OSError:
                     pass
-
-    # ---- дебаунс-сохранение в фоне ---- #
 
     def start_debounce_worker(self) -> None:
         if self._debounce_thread is not None:
@@ -1140,8 +1091,6 @@ class StateStore:
             triggered = self._dirty_event.wait(timeout=1.0)
             if not triggered:
                 continue
-            # Ждём "затишья": пока в течение DEBOUNCE_SECONDS не было новых
-            # изменений, продолжаем откладывать сохранение.
             while True:
                 self._dirty_event.clear()
                 woke = self._stop_event.wait(timeout=DEBOUNCE_SECONDS)
@@ -1154,18 +1103,13 @@ class StateStore:
                 break
 
     def mark_dirty(self) -> None:
-        """Помечает состояние изменённым — сохранение произойдёт через ~DEBOUNCE_SECONDS."""
         self._dirty_event.set()
 
     def notify_cache_refreshed(self) -> None:
-        """Кэш предметов обновился — сохраняем снапшот сразу, без дебаунса."""
         threading.Thread(target=self.save_to_channel_now, daemon=True).start()
 
     def flush_now(self) -> None:
-        """Немедленное блокирующее сохранение (используется при shutdown)."""
         self.save_to_channel_now()
-
-    # ---- API языка пользователя ---- #
 
     def get_user_lang(self, user_id: int) -> str:
         with self._lock:
@@ -1176,8 +1120,6 @@ class StateStore:
             self.user_langs[str(user_id)] = lang
         self.mark_dirty()
 
-    # ---- API интервала обновления ---- #
-
     def get_refresh_interval_days(self) -> int:
         with self._lock:
             return self.refresh_interval_days
@@ -1186,8 +1128,6 @@ class StateStore:
         with self._lock:
             self.refresh_interval_days = days
         self.mark_dirty()
-
-    # ---- API фильтров пользователя ---- #
 
     def get_user_filters(self, user_id: int) -> ItemFilters:
         with self._lock:
@@ -1203,8 +1143,6 @@ class StateStore:
 
     def reset_user_filters(self, user_id: int) -> None:
         self.set_user_filters(user_id, ItemFilters())
-
-    # ---- API известных картинок ---- #
 
     def load_known_image_urls(self) -> dict[str, str]:
         with self._lock:
@@ -1493,6 +1431,42 @@ def _try_download_single(url: str) -> Optional[Image.Image]:
         _url_status_cache[url] = False
         return None
 
+def refresh_item_image_url(item: Item) -> Optional[str]:
+    """Делает запрос к ScrapingAnt для страницы категории предмета и ищет его картинку."""
+    slug = item.category_slug
+    target_url = f"{BASE_URL}/mm2/{slug}"
+    api_url = f"https://api.scrapingant.com/v2/general?url={target_url}&x-api-key={SCRAPINGANT_API_KEY}&browser=true"
+    try:
+        resp = requests.get(api_url, timeout=REQUEST_TIMEOUT)
+        if resp.status_code != 200:
+            return None
+        soup = BeautifulSoup(resp.text, "html.parser")
+        cards = soup.find_all("div", class_="itemcolumn") or soup.find_all("tr")
+        for card in cards:
+            btn = card.find("button")
+            name = ""
+            if btn and btn.get("data-name"):
+                name = btn.get("data-name").strip()
+            else:
+                head = card.find("div", class_="itemhead")
+                if head:
+                    name = head.get_text(strip=True)
+            if not name or normalize_text(name) != normalize_text(item.name):
+                continue
+            img_tag = card.find("img", class_="itemimage") or card.find("img")
+            if img_tag:
+                for attr in ("src", "data-src", "data-lazy-src"):
+                    raw = img_tag.get(attr)
+                    if raw and "N_A" not in raw.upper():
+                        return _normalize_image_src(raw)
+            # fallback-угадывание имени файла
+            for guess in guess_image_filenames(name):
+                candidate = f"{BASE_URL}/media/mm2{slug}/{guess}.png"
+                return candidate
+    except Exception:
+        logger.exception("Не удалось обновить URL изображения для %s", item.name)
+    return None
+
 def download_item_image(item: Item) -> Optional[Image.Image]:
     candidates = list(item.image_url_candidates) or ([item.image_url] if item.image_url else [])
     for url in candidates:
@@ -1501,6 +1475,16 @@ def download_item_image(item: Item) -> Optional[Image.Image]:
             if url != item.image_url:
                 item.image_url = url
             state_store.save_known_image_url(normalize_text(item.name), url)
+            return img
+
+    # Все кандидаты провалились — пробуем обновить URL через ScrapingAnt
+    fresh_url = refresh_item_image_url(item)
+    if fresh_url:
+        img = _try_download_single(fresh_url)
+        if img is not None:
+            item.image_url = fresh_url
+            item.image_url_candidates.insert(0, fresh_url)
+            state_store.save_known_image_url(normalize_text(item.name), fresh_url)
             return img
     return None
 
@@ -1574,22 +1558,16 @@ def create_item_image(item: Item, lang: str) -> io.BytesIO:
     panel_center_y = height // 2
 
     if item_img:
-        # Картинка предмета занимает почти весь холст, с небольшими полями
-        # по краям, чтобы оставалось место для мягкой тени и не было
-        # обрезаний при разных пропорциях исходного изображения.
         margin = 40
         max_w = width - margin * 2
         max_h = height - margin * 2
         ratio = min(max_w / item_img.width, max_h / item_img.height, 1.0)
-        # Разрешаем и увеличение мелких исходников, чтобы предмет всегда
-        # заполнял холст, а не терялся на фоне маленькой картинкой.
         if ratio < 1.0 or (item_img.width < max_w and item_img.height < max_h):
             ratio = min(max_w / item_img.width, max_h / item_img.height)
         new_w = max(1, int(item_img.width * ratio))
         new_h = max(1, int(item_img.height * ratio))
         item_img = item_img.resize((new_w, new_h), Image.LANCZOS)
 
-        # Тень под предметом
         shadow = Image.new("RGBA", (new_w + 80, new_h + 80), (0, 0, 0, 0))
         sdraw = ImageDraw.Draw(shadow)
         sdraw.ellipse([20, new_h - 10, new_w + 60, new_h + 70], fill=(0, 0, 0, 100))
@@ -2122,10 +2100,9 @@ if __name__ == "__main__":
             "В канале не найдено предыдущего снапшота — начинаем с чистого состояния "
             "и сразу создадим первый снапшот."
         )
-        # Запускаем первый рефреш, потому что кэш пуст
+        # Первый рефреш, потому что кэш пуст
         threading.Thread(target=cache.refresh, daemon=True).start()
     else:
-        # Состояние загружено; проверяем, есть ли предметы в кэше
         if cache.size == 0:
             logger.info("Кэш предметов отсутствует в снапшоте — запускаем обновление.")
             threading.Thread(target=cache.refresh, daemon=True).start()
@@ -2133,7 +2110,6 @@ if __name__ == "__main__":
             logger.info("Кэш предметов успешно восстановлен (предметов: %d).", cache.size)
 
     state_store.start_debounce_worker()
-
     threading.Thread(target=run_health_check_server, daemon=True).start()
 
     scheduler = BackgroundScheduler()
