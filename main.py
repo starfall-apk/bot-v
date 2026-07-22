@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import html
 import io
+import json
 import logging
 import math
 import os
 import random
 import re
-import sqlite3
 import signal
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -107,6 +108,35 @@ class Item:
     @property
     def search_key(self) -> str:
         return normalize_text(self.name)
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "category_slug": self.category_slug,
+            "rarity": self.rarity,
+            "value": self.value,
+            "value_display": self.value_display,
+            "ranged_value": self.ranged_value,
+            "stability": self.stability,
+            "image_url": self.image_url,
+            "image_url_candidates": self.image_url_candidates,
+            "origin": self.origin,
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> "Item":
+        return Item(
+            name=d["name"],
+            category_slug=d["category_slug"],
+            rarity=d["rarity"],
+            value=d.get("value"),
+            value_display=d.get("value_display", "N/A"),
+            ranged_value=d.get("ranged_value"),
+            stability=d.get("stability", "Unknown"),
+            image_url=d.get("image_url", ""),
+            image_url_candidates=d.get("image_url_candidates", []),
+            origin=d.get("origin", ""),
+        )
 
 # --------------------------------------------------------------------------- #
 # Нормализация и перевод
@@ -788,6 +818,17 @@ class ValuesCache:
         with self._lock:
             return len(self._items)
 
+    # Методы экспорта / импорта для снапшота
+    def export_items(self) -> list[dict]:
+        with self._lock:
+            return [item.to_dict() for item in self._items]
+
+    def load_items(self, raw_items: list[dict]) -> None:
+        items = [Item.from_dict(d) for d in raw_items]
+        with self._lock:
+            self._items = items
+            self._search_index = self._build_search_index(items)
+
 cache = ValuesCache()
 
 # --------------------------------------------------------------------------- #
@@ -916,7 +957,7 @@ class StateStore:
     def _to_state_dict(self) -> dict:
         with self._lock:
             return {
-                "version": 1,
+                "version": 2,  # увеличили версию
                 "saved_at": time.time(),
                 "settings": {
                     "refresh_interval_days": self.refresh_interval_days,
@@ -927,6 +968,7 @@ class StateStore:
                 "cache": {
                     "last_updated": cache.last_updated or None,
                     "last_error": cache.last_error,
+                    "items": cache.export_items(),  # список предметов
                 },
             }
 
@@ -946,6 +988,10 @@ class StateStore:
                 str(k): str(v) for k, v in (settings.get("known_images", {}) or {}).items()
             }
 
+        # Восстанавливаем предметы
+        raw_items = cache_info.get("items")
+        if raw_items:
+            cache.load_items(raw_items)
         with cache._lock:
             cache.last_updated = cache_info.get("last_updated") or 0.0
             cache.last_error = cache_info.get("last_error")
@@ -1859,6 +1905,16 @@ async def search_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     best_item, _score = results[0]
     await send_item_card(update, context, best_item, lang)
 
+async def force_refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Принудительное обновление кэша (только для админа)."""
+    user_id = update.effective_user.id
+    lang = state_store.get_user_lang(user_id)
+    if user_id != ADMIN_ID:
+        await update.message.reply_text(t(lang, "admin_only"))
+        return
+    await update.message.reply_text("🔄 Запускаю принудительное обновление кэша...")
+    threading.Thread(target=cache.refresh, daemon=True).start()
+
 # --------------------------------------------------------------------------- #
 # Callback Query
 # --------------------------------------------------------------------------- #
@@ -2066,11 +2122,18 @@ if __name__ == "__main__":
             "В канале не найдено предыдущего снапшота — начинаем с чистого состояния "
             "и сразу создадим первый снапшот."
         )
-        state_store.save_to_channel_now()
+        # Запускаем первый рефреш, потому что кэш пуст
+        threading.Thread(target=cache.refresh, daemon=True).start()
+    else:
+        # Состояние загружено; проверяем, есть ли предметы в кэше
+        if cache.size == 0:
+            logger.info("Кэш предметов отсутствует в снапшоте — запускаем обновление.")
+            threading.Thread(target=cache.refresh, daemon=True).start()
+        else:
+            logger.info("Кэш предметов успешно восстановлен (предметов: %d).", cache.size)
 
     state_store.start_debounce_worker()
 
-    threading.Thread(target=cache.refresh, daemon=True).start()
     threading.Thread(target=run_health_check_server, daemon=True).start()
 
     scheduler = BackgroundScheduler()
@@ -2092,6 +2155,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("setrefresh", setrefresh_command))
     application.add_handler(CommandHandler("filters", filters_command))
     application.add_handler(CommandHandler("list", list_command))
+    application.add_handler(CommandHandler("refresh12345", force_refresh_command))
 
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_text_message))
