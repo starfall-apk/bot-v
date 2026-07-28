@@ -33,6 +33,7 @@ from aiogram.types import (
     Message,
     CallbackQuery,
 )
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
@@ -85,6 +86,7 @@ logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 try:
     from deep_translator import GoogleTranslator
+
     TRANSLATOR_AVAILABLE = True
 except ImportError:
     TRANSLATOR_AVAILABLE = False
@@ -534,7 +536,7 @@ def get_ru_name(name_en: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Парсинг (полная версия fetch_category и fetch_all_items)
+# Парсинг
 # --------------------------------------------------------------------------- #
 
 STABILITY_MAP_RU = {
