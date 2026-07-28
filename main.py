@@ -16,7 +16,7 @@ import time
 import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass, field
-from typing import Optional, Union
+from typing import Optional
 
 import requests
 from bs4 import BeautifulSoup
@@ -1235,10 +1235,11 @@ def rarity_label_localized(lang: str, slug: str) -> str:
 
 TEXTS: dict[str, dict[str, str]] = {"ru": {}, "en": {}}
 
-# Базовые эмодзи в тексте – они будут разрешаться динамически через t()
-# Но t() не поддерживает вызов emoji(), поэтому мы вставим плейсхолдеры и будем форматировать с kwargs
-# Для удобства определим функцию, которая возвращает словарь с эмодзи
+
+# Эмодзи в тексте — разрешаются динамически через t_em
 def emoji_dict() -> dict[str, str]:
+    """Возвращает словарь эмодзи для подстановки в шаблоны.
+    Ключи не должны совпадать с именами параметров t() (lang, key)."""
     return {
         "wave": emoji("wave"),
         "stats": emoji("stats"),
@@ -1246,7 +1247,7 @@ def emoji_dict() -> dict[str, str]:
         "cross": emoji("cross"),
         "like": emoji("like"),
         "dislike": emoji("dislike"),
-        "lang": emoji("lang"),
+        "globe": emoji("lang"),          # переименован, чтобы не конфликтовать с lang
         "filters": emoji("filters"),
         "list": emoji("list"),
         "value": emoji("value"),
@@ -1266,28 +1267,63 @@ def emoji_dict() -> dict[str, str]:
         "lock": emoji("lock"),
     }
 
+
 def t(lang: str, key: str, **kwargs) -> str:
+    """Возвращает локализованный текст с подставленными kwargs."""
     lang = lang if lang in TEXTS else DEFAULT_LANG
     template = TEXTS[lang].get(key, TEXTS[DEFAULT_LANG].get(key, key))
-    # Подставим эмодзи, если они есть в kwargs
     return template.format(**kwargs) if kwargs else template
+
+
+def t_em(lang: str, key: str, **kwargs) -> str:
+    """Форматирует шаблон, подставляя эмодзи и переданные параметры."""
+    return t(lang, key, **emoji_dict(), **kwargs)
+
 
 # Заполнение текстов с плейсхолдерами {wave} и т.п.
 TEXTS["ru"].update({
-    "start": "{wave} <b>Привет!</b> Я бот-оценщик ценности предметов Murder Mystery 2.\n\n{pencil} Просто напиши название предмета на русском или английском — например: <i>Хрома пистолет путешественника</i>, <i>Ледокрыло</i> или <i>Nebula</i>.\n\n📋 <b>Команды:</b>\n{settings} /settings — язык интерфейса\n{filters} /filters — настроить фильтры поиска\n{list} /list — каталог всех предметов\n{stats} /status — статус базы данных",
-    "help": "{info} Напиши название предмета MM2 — я найду его ценность.\n\n📋 <b>Команды:</b>\n{settings} /settings — сменить язык интерфейса\n{filters} /filters — настроить фильтры (цена, редкость, стабильность)\n{list} /list — список всех предметов (дорогие → дешёвые)\n{stats} /status — статус базы данных",
+    "start": (
+        "{wave} <b>Привет!</b> Я бот-оценщик ценности предметов Murder Mystery 2.\n\n"
+        "{pencil} Просто напиши название предмета на русском или английском — например: "
+        "<i>Хрома пистолет путешественника</i>, <i>Ледокрыло</i> или <i>Nebula</i>.\n\n"
+        "📋 <b>Команды:</b>\n"
+        "{settings} /settings — язык интерфейса\n"
+        "{filters} /filters — настроить фильтры поиска\n"
+        "{list} /list — каталог всех предметов\n"
+        "{stats} /status — статус базы данных"
+    ),
+    "help": (
+        "{info} Напиши название предмета MM2 — я найду его ценность.\n\n"
+        "📋 <b>Команды:</b>\n"
+        "{settings} /settings — сменить язык интерфейса\n"
+        "{filters} /filters — настроить фильтры (цена, редкость, стабильность)\n"
+        "{list} /list — список всех предметов (дорогие → дешёвые)\n"
+        "{stats} /status — статус базы данных"
+    ),
     "settings_title": "{settings} <b>Выберите язык интерфейса</b>",
     "settings_saved": "{check} Язык сохранён: <b>{lang_name}</b>",
-    "not_found": "😕 Ничего не найдено по запросу «{query}».\n{pencil} Проверь написание или попробуй другое название предмета.\n{filters} Возможно, стоит проверить активные /filters.",
+    "not_found": (
+        "😕 Ничего не найдено по запросу «{query}».\n"
+        "{pencil} Проверь написание или попробуй другое название предмета.\n"
+        "{filters} Возможно, стоит проверить активные /filters."
+    ),
     "value_label": "Примерная стоимость",
     "status_label": "Категория",
     "stability_label": "Стабильность",
     "origin_label": "Событие",
     "unknown_stability": "Неизвестно",
     "cache_empty": "⏳ База данных ещё загружается, попробуй через минуту.",
-    # Статусные сообщения теперь собираются в коде, здесь только текст без эмодзи
-    "status_report": "{stats} Предметов в базе: <b>{count}</b>\n{refresh} Последнее обновление: <b>{last_update}</b>\n⚠️ Ошибка последнего обновления: <b>{error}</b>\n{lock} Хранилище: приватный Telegram-канал",
-    "status_report_ok": "{stats} Предметов в базе: <b>{count}</b>\n{refresh} Последнее обновление: <b>{last_update}</b>\n{lock} Хранилище: приватный Telegram-канал",
+    "status_report": (
+        "{stats} Предметов в базе: <b>{count}</b>\n"
+        "{refresh} Последнее обновление: <b>{last_update}</b>\n"
+        "⚠️ Ошибка последнего обновления: <b>{error}</b>\n"
+        "{lock} Хранилище: приватный Telegram-канал"
+    ),
+    "status_report_ok": (
+        "{stats} Предметов в базе: <b>{count}</b>\n"
+        "{refresh} Последнее обновление: <b>{last_update}</b>\n"
+        "{lock} Хранилище: приватный Telegram-канал"
+    ),
     "never": "ещё не обновлялось",
     "no_error": "нет",
     "admin_set_refresh": "⚙️ Текущий интервал обновления: {days} дн.\nИспользуйте /setrefresh <число> чтобы изменить (от 1 до 90).",
@@ -1328,19 +1364,48 @@ TEXTS["ru"].update({
 })
 
 TEXTS["en"].update({
-    "start": "{wave} <b>Hi!</b> I'm a Murder Mystery 2 item value checker bot.\n\n{pencil} Just type an item name in English or Russian — for example: <i>Chroma Traveler's Gun</i>, <i>Icewing</i>.\n\n📋 <b>Commands:</b>\n{settings} /settings — interface language\n{filters} /filters — configure search filters\n{list} /list — item catalog\n{stats} /status — database status",
-    "help": "{info} Type an MM2 item name — I'll find its value.\n\n📋 <b>Commands:</b>\n{settings} /settings — change interface language\n{filters} /filters — configure filters\n{list} /list — list of all items\n{stats} /status — database status",
+    "start": (
+        "{wave} <b>Hi!</b> I'm a Murder Mystery 2 item value checker bot.\n\n"
+        "{pencil} Just type an item name in English or Russian — for example: "
+        "<i>Chroma Traveler's Gun</i>, <i>Icewing</i>.\n\n"
+        "📋 <b>Commands:</b>\n"
+        "{settings} /settings — interface language\n"
+        "{filters} /filters — configure search filters\n"
+        "{list} /list — item catalog\n"
+        "{stats} /status — database status"
+    ),
+    "help": (
+        "{info} Type an MM2 item name — I'll find its value.\n\n"
+        "📋 <b>Commands:</b>\n"
+        "{settings} /settings — change interface language\n"
+        "{filters} /filters — configure filters\n"
+        "{list} /list — list of all items\n"
+        "{stats} /status — database status"
+    ),
     "settings_title": "{settings} <b>Choose interface language</b>",
     "settings_saved": "{check} Language saved: <b>{lang_name}</b>",
-    "not_found": "😕 Nothing found for «{query}».\n{pencil} Check the spelling or try another query.\n{filters} You may also want to check your active /filters.",
+    "not_found": (
+        "😕 Nothing found for «{query}».\n"
+        "{pencil} Check the spelling or try another query.\n"
+        "{filters} You may also want to check your active /filters."
+    ),
     "value_label": "Estimated Value",
     "status_label": "Category",
     "stability_label": "Stability",
     "origin_label": "Origin",
     "unknown_stability": "Unknown",
     "cache_empty": "⏳ Database is still loading, please try again in a minute.",
-    "status_report": "{stats} Items in database: <b>{count}</b>\n{refresh} Last update: <b>{last_update}</b>\n⚠️ Last update error: <b>{error}</b>\n{lock} Storage: private Telegram channel",
-    "status_report_ok": "{stats} Items in database: <b>{count}</b>\n{refresh} Last update: <b>{last_update}</b>\n{lock} Storage: private Telegram channel",
+    "status_report": (
+        "{stats} Items in database: <b>{count}</b>\n"
+        "{refresh} Last update: <b>{last_update}</b>\n"
+        "⚠️ Last update error: <b>{error}</b>\n"
+        "{lock} Storage: private Telegram channel"
+    ),
+    "status_report_ok": (
+        "{stats} Items in database: <b>{count}</b>\n"
+        "{refresh} Last update: <b>{last_update}</b>\n"
+        "{lock} Storage: private Telegram channel"
+    ),
     "never": "not updated yet",
     "no_error": "none",
     "admin_set_refresh": "⚙️ Current refresh interval: {days} days.\nUse /setrefresh <number> to change (1–90).",
@@ -1379,13 +1444,6 @@ TEXTS["en"].update({
     "feedback_sent": "{check} Thank you! Administrator will receive your feedback.",
     "feedback_cancelled": "{cross} Feedback cancelled.",
 })
-
-
-# Функция-обёртка для t с автоматическими эмодзи
-def t_em(lang: str, key: str, **kwargs) -> str:
-    """Форматирует шаблон, подставляя эмодзи и переданные параметры."""
-    return t(lang, key, **emoji_dict(), **kwargs)
-
 
 # --------------------------------------------------------------------------- #
 # Шрифты и картинки
@@ -1641,8 +1699,6 @@ def make_button(text: str, callback_data: str, icon_name: str = None, style: str
     style может быть 'primary', 'success', 'danger'.
     """
     if use_premium() and icon_name:
-        # Убираем иконку из текста, если она там есть (на всякий случай)
-        # Предполагаем, что текст уже без эмодзи, только описание
         icon_id_str = icon_id(icon_name)
         if icon_id_str:
             return InlineKeyboardButton(text=text, callback_data=callback_data,
@@ -1695,7 +1751,7 @@ def build_filters_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMar
             "filt:ask_min", icon_name="value")],
         [make_button_with_emoji(
             t_em(lang, "filters_btn_max", val=_filters_summary_value(lang, filters, "max")),
-            "filt:ask_max", icon_name="value")],  # иконка доллара
+            "filt:ask_max", icon_name="value")],
         [make_button_with_emoji(
             t_em(lang, "filters_btn_rarity", val=_filters_summary_value(lang, filters, "rarity")),
             "filt:rarity_menu")],
@@ -1716,7 +1772,6 @@ def build_rarity_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboar
         "filt:set_rarity:all")]]
     for slug, _label, emoji_char in CATEGORIES:
         mark = "✅ " if filters.rarity_slug == slug else ""
-        # Используем обычный эмодзи редкости, т.к. в меню нет смысла в премиум иконках
         rows.append([InlineKeyboardButton(f"{mark}{emoji_char} {rarity_label_localized(lang, slug)}",
                                           callback_data=f"filt:set_rarity:{slug}")])
     rows.append([make_button_with_emoji("Назад", "filt:back", icon_name="left", style="primary")])
@@ -1824,7 +1879,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     count = cache.size
     last_update = time.strftime("%Y-%m-%d %H:%M:%S",
                                 time.localtime(cache.last_updated)) if cache.last_updated else t_em(lang, "never")
-    em = emoji_dict()
     if cache.last_error:
         text = t_em(lang, "status_report", count=count, last_update=last_update, error=cache.last_error)
     else:
@@ -1992,7 +2046,7 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # --------------------------------------------------------------------------- #
-# Callback Query (исправлен фидбэк)
+# Callback Query
 # --------------------------------------------------------------------------- #
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
