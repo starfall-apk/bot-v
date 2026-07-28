@@ -56,12 +56,12 @@ PORT = int(os.environ.get("PORT", "10000"))
 
 BASE_URL = "https://supremevalues.com"
 
-# Изменённые цвета редкости
+# Исправленные цвета редкости (Godly - розовый, Ancient - фиолетовый)
 CATEGORIES: list[tuple[str, str, str]] = [
-    ("godlies", "Godly", "🟣"),        # розовый (фиолетовый)
+    ("godlies", "Godly", "🌸"),        # розовый
     ("chromas", "Chroma", "🌈"),
     ("legendaries", "Legendary", "🔴"), # красный
-    ("ancients", "Ancient", "🟠"),
+    ("ancients", "Ancient", "🟣"),      # фиолетовый
     ("vintages", "Vintage", "🟡"),      # жёлтый
     ("rares", "Rare", "🟢"),            # зелёный
     ("uncommons", "Uncommon", "🔵"),    # голубой
@@ -93,49 +93,51 @@ except ImportError:
     logger.warning("deep-translator не установлен.")
 
 # --------------------------------------------------------------------------- #
-# Премиум-эмодзи (обновлены ID согласно последнему списку)
+# Обновлённые ID премиум-эмодзи (фиолетовый стиль)
 # --------------------------------------------------------------------------- #
 
 PREMIUM = {
-    "wave": 5461117441612462242,
-    "stats": 5231200819986047254,
-    "check": 5206607081334906820,
-    "cross": 5210952531676504517,
-    "like": 5469770542288478598,
-    "dislike": 5472309400536358507,
-    "lang": 5447410659077661506,
-    "filters": 5305265301917549162,
-    "list": 5253742260054409879,
-    "value": 5409048419211682843,
-    "name_tag": 5397782960512444700,
-    "chart_up": 5244837092042750681,
-    "chart_down": 5246762912428603768,
-    "gift": 5192879906295397710,
-    "left": 5332716632634579071,
-    "right": 5332774511613859175,
-    "star": 5325547803936572038,          # звёздочки перед названием
-    "fire": 5424972470023104089,
-    "info": 5334544901428229844,
-    "refresh": 5375338737028841420,
+    "wave": 5262586680048625238,          # привет
+    "stats": 5231200819986047254,         # статус
+    "yes": 5316786684833053986,           # Да (вместо галочки)
+    "no": 5316669728578616927,            # Нет (вместо крестика)
+    "verify": 5354844694985590087,        # верификация (галочка в кружочке) - для "Все"?
+    "like": 5262501394883028496,          # лайк
+    "dislike": 5262904116786507271,       # дизлайк
+    "lang": 5447410659077661506,          # язык
+    "filters": 5305265301917549162,       # фильтры
+    "list": 5319295899216654757,          # список
+    "value": 5319065555825605163,         # ценность
+    "name_tag": 5316562783892945926,      # название
+    "chart_up": 5244837092042750681,      # график вверх
+    "chart_down": 5246762912428603768,    # график вниз
+    "gift": 5192879906295397710,          # подарок
+    "left": 5316757423220867321,          # влево
+    "right": 5316926258385271354,         # вправо
+    "star": 5316791559620934773,          # звездочка перед названием
+    "fire": 5355092132346482871,          # огонёк
+    "info": 5262831879731555779,          # инфо
+    "refresh": 5375338737028841420,       # обновление
     "home": 5416041192905265756,          # дом
-    "div_dark": 5255779912798710813,
-    "div_light": 5256249601832268668,
-    "candlestick": 5451882707875276247,
-    "plus": 5397916757333654639,
-    "diamond": 5427168083074628963,
-    "trash": 5445267414562389170,
-    "rainbow": 5409109841538994759,
+    "div_dark": 5255779912798710813,      # тёмный разделитель
+    "div_light": 5256249601832268668,     # светлый разделитель
+    "candlestick": 5451882707875276247,   # свеча
+    "plus": 5397916757333654639,          # плюсик
+    "diamond": 5316798019251749107,       # бриллиант
+    "trash": 5263003781502608081,         # мусорка
+    "heart": 5316865463123197927,         # сердечко (бывшая закладка)
+    "rainbow": 5409109841538994759,       # радуга
     "settings": 5341715473882955310,      # настройки
-    "loading": 5386367538735104399,       # загрузка
+    "loading": 5319095345718770462,       # загрузка
     "bulb": 5422439311196834318,          # лампочка
     "pencil": 5395444784611480792,        # карандашик
     "red_flag": 5460755126761312667,      # красный флажок
     "party": 5461151367559141950,         # хлопушка
-    "star2": 5438496463044752972,         # звезда (альтернативная)
-    "alarm": 5395695537687123235,         # сигнализация
-    "top": 5415655814079723871,
-    "new": 5382357040008021292,
-    "soon": 5440621591387980068,
+    "star2": 5354799331541011105,         # звезда (альтернативная)
+    "alarm": 5316960914476384229,         # сигнализация
+    "top": 5415655814079723871,           # топ
+    "new": 5382357040008021292,           # новый
+    "soon": 5440621591387980068,          # скоро
     "free": 5406756500108501710,          # бесплатно
     "lock": 5296369303661067030,          # замочек
 }
@@ -143,8 +145,9 @@ PREMIUM = {
 FALLBACK_EMOJI = {
     "wave": "👋",
     "stats": "📊",
-    "check": "✔️",
-    "cross": "❌",
+    "yes": "✅",
+    "no": "❌",
+    "verify": "✅",
     "like": "👍",
     "dislike": "👎",
     "lang": "🌐",
@@ -168,6 +171,7 @@ FALLBACK_EMOJI = {
     "plus": "➕",
     "diamond": "💎",
     "trash": "🗑",
+    "heart": "💖",
     "rainbow": "🌈",
     "settings": "⚙️",
     "loading": "⌛",
@@ -218,8 +222,9 @@ def icon_id(name: str) -> Optional[str]:
 
 def divider() -> str:
     if use_premium():
-        return (emoji("div_dark") + emoji("div_light")) * 3
-    return "━━━━━━━━━━━━━━━━━━"
+        # Увеличена длина разделителя в ~1.8 раза (5 пар тёмный+светлый = 10 эмодзи)
+        return (emoji("div_dark") + emoji("div_light")) * 5
+    return "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 
 def rarity_plate_html(slug: str) -> str:
@@ -282,7 +287,7 @@ class Item:
 
 
 # --------------------------------------------------------------------------- #
-# Нормализация
+# Нормализация (с поддержкой римских цифр)
 # --------------------------------------------------------------------------- #
 
 CYR_TO_LAT = {
@@ -302,26 +307,29 @@ EN_LAYOUT_TO_RU = str.maketrans(
     "йцукенгшщзхъфывапролджэячсмитьбю.ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,",
 )
 
+ROMAN_NUMERALS = {
+    "i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5,
+    "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10,
+    "xi": 11, "xii": 12, "xiii": 13, "xiv": 14, "xv": 15,
+    "xvi": 16, "xvii": 17, "xviii": 18, "xix": 19, "xx": 20,
+}
 
 def strip_accents(text: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
 
-
 def normalize_text(text: str) -> str:
     text = strip_accents(text.lower())
+    # Сохраняем римские цифры как есть, но удаляем остальные не-буквенно-цифровые
     text = re.sub(r"[^a-zа-я0-9]+", " ", text)
     return " ".join(text.split())
-
 
 def token_sorted_text(text: str) -> str:
     words = sorted(re.findall(r"[a-zа-я0-9]+", strip_accents(text.lower())))
     return " ".join(words)
 
-
 def transliterate_ru_to_lat(text: str) -> str:
     text = text.lower()
     return "".join(CYR_TO_LAT.get(ch, ch) for ch in text)
-
 
 def generate_query_variants(raw_query: str) -> list[str]:
     raw = raw_query.strip()
@@ -341,8 +349,14 @@ def generate_query_variants(raw_query: str) -> list[str]:
     v = normalize_text(translit)
     if v:
         variants.add(v)
+    # Если в запросе есть римская цифра, добавляем вариант с арабской
+    words = base.split()
+    for i, w in enumerate(words):
+        if w in ROMAN_NUMERALS:
+            new_words = words.copy()
+            new_words[i] = str(ROMAN_NUMERALS[w])
+            variants.add(" ".join(new_words))
     return list(variants)
-
 
 # --------------------------------------------------------------------------- #
 # Перевод (словарь + авто-разбор + Google)
@@ -535,7 +549,7 @@ def get_ru_name(name_en: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Парсинг (полная версия fetch_category и fetch_all_items)
+# Парсинг (полная версия)
 # --------------------------------------------------------------------------- #
 
 STABILITY_MAP_RU = {
@@ -630,6 +644,13 @@ def guess_image_filenames(display_name: str) -> list[str]:
     add(first_word)
     safe_name = re.sub(r"[^\w\s-]", "", clean).strip().replace(" ", "_")
     add(safe_name)
+    # Добавляем вариант с числами (римские -> арабские)
+    for i, w in enumerate(plain_words):
+        if w.lower() in ROMAN_NUMERALS:
+            new_words = plain_words.copy()
+            new_words[i] = str(ROMAN_NUMERALS[w.lower()])
+            add("".join(new_words))
+            add("_".join(new_words))
     return [c for c in candidates if c]
 
 
@@ -759,7 +780,7 @@ def fetch_all_items() -> list[Item]:
 
 
 # --------------------------------------------------------------------------- #
-# Поиск и Кэш
+# Поиск и Кэш (исправлен для пронумерованных предметов)
 # --------------------------------------------------------------------------- #
 
 @dataclass
@@ -789,6 +810,13 @@ class ValuesCache:
             if item_key_lower in ITEM_ALIASES:
                 for alias in ITEM_ALIASES[item_key_lower]:
                     keys_to_add.add(alias)
+            # Добавляем вариант с арабскими цифрами вместо римских
+            words = item.name.split()
+            for i, w in enumerate(words):
+                if w.lower() in ROMAN_NUMERALS:
+                    new_words = words.copy()
+                    new_words[i] = str(ROMAN_NUMERALS[w.lower()])
+                    keys_to_add.add(" ".join(new_words))
             for key in keys_to_add:
                 k_norm = normalize_text(key)
                 k_sorted = token_sorted_text(key)
@@ -919,7 +947,7 @@ class ValuesCache:
 cache = ValuesCache()
 
 # --------------------------------------------------------------------------- #
-# StateStore (добавлен флаг use_premium_emoji)
+# StateStore (без изменений)
 # --------------------------------------------------------------------------- #
 
 DEFAULT_LANG = "ru"
@@ -1194,7 +1222,7 @@ class StateStore:
 state_store = StateStore(channel_id=CHANNEL_ID)
 
 # --------------------------------------------------------------------------- #
-# Локализация (исправлены шаблоны, убраны эмодзи из текстов кнопок фильтров)
+# Локализация (обновлены эмодзи yes/no, убраны эмодзи из текстов кнопок)
 # --------------------------------------------------------------------------- #
 
 RARITY_RU_LABELS = {
@@ -1234,8 +1262,9 @@ def emoji_dict() -> dict[str, str]:
     return {
         "wave": emoji("wave"),
         "stats": emoji("stats"),
-        "check": emoji("check"),
-        "cross": emoji("cross"),
+        "yes": emoji("yes"),
+        "no": emoji("no"),
+        "verify": emoji("verify"),
         "like": emoji("like"),
         "dislike": emoji("dislike"),
         "globe": emoji("lang"),
@@ -1289,7 +1318,7 @@ TEXTS["ru"].update({
         "{stats} /status — статус базы данных"
     ),
     "settings_title": "{settings} <b>Выберите язык интерфейса</b>",
-    "settings_saved": "{check} Язык сохранён: <b>{lang_name}</b>",
+    "settings_saved": "{yes} Язык сохранён: <b>{lang_name}</b>",
     "not_found": (
         "😕 Ничего не найдено по запросу «{query}».\n"
         "{pencil} Проверь написание или попробуй другое название предмета.\n"
@@ -1315,11 +1344,11 @@ TEXTS["ru"].update({
     "never": "ещё не обновлялось",
     "no_error": "нет",
     "admin_set_refresh": "⚙️ Текущий интервал обновления: {days} дн.\nИспользуйте /setrefresh <число> чтобы изменить (от 1 до 90).",
-    "admin_refresh_updated": "{check} Интервал обновления изменён на {days} дн.",
-    "admin_refresh_invalid": "{cross} Укажите целое число дней от 1 до 90.",
+    "admin_refresh_updated": "{yes} Интервал обновления изменён на {days} дн.",
+    "admin_refresh_invalid": "{no} Укажите целое число дней от 1 до 90.",
     "admin_only": "⛔ Эта команда доступна только администратору.",
     "filters_title": "{filters} <b>Фильтры поиска</b>\n\nНастрой параметры и нажми «Применить».",
-    # Тексты кнопок БЕЗ эмодзи, иконки будут добавлены через icon_custom_emoji_id
+    # Тексты кнопок без эмодзи
     "filters_btn_min": "Валюта (от): {val}",
     "filters_btn_max": "Валюта (до): {val}",
     "filters_btn_rarity": "Редкость: {val}",
@@ -1330,14 +1359,14 @@ TEXTS["ru"].update({
     "filters_all": "все",
     "filters_ask_min": "{pencil} Введи <b>минимальное</b> значение цены числом (например: 1000):",
     "filters_ask_max": "{pencil} Введи <b>максимальное</b> значение цены числом, либо -1 для «неограниченно»:",
-    "filters_invalid_number": "{cross} Это не похоже на корректное число. Попробуй ещё раз:",
-    "filters_invalid_range": "{cross} Минимум не может быть больше максимума. Попробуй ещё раз:",
-    "filters_invalid_negative": "{cross} Значение не может быть отрицательным (кроме -1 для «неограниченно»). Попробуй ещё раз:",
-    "filters_saved": "{check} Значение сохранено",
-    "filters_applied": "{check} Фильтры применены!",
+    "filters_invalid_number": "{no} Это не похоже на корректное число. Попробуй ещё раз:",
+    "filters_invalid_range": "{no} Минимум не может быть больше максимума. Попробуй ещё раз:",
+    "filters_invalid_negative": "{no} Значение не может быть отрицательным (кроме -1 для «неограниченно»). Попробуй ещё раз:",
+    "filters_saved": "{yes} Значение сохранено",
+    "filters_applied": "{yes} Фильтры применены!",
     "filters_rarity_title": "🏷 <b>Выберите редкость</b>",
     "filters_stability_title": "{chart_up} <b>Выберите стабильность</b>",
-    "filters_option_all": "{check} Все",
+    "filters_option_all": "Все",  # без эмодзи, иконка будет через icon_custom_emoji_id
     "list_title": "{list} <b>Каталог предметов</b> (дорогие → дешёвые)",
     "list_empty": "😕 По заданным фильтрам ничего не найдено. Проверь /filters.",
     "list_nav_page": "📄 {page}/{total}",
@@ -1348,8 +1377,8 @@ TEXTS["ru"].update({
     "feedback_reason_bad_image": "Неверная картинка",
     "feedback_reason_other": "Другое",
     "feedback_ask_details": "{pencil} Опиши подробнее или укажи правильный вариант перевода/названия (или нажми /cancel):",
-    "feedback_sent": "{check} Спасибо! Администратор получит твой отзыв.",
-    "feedback_cancelled": "{cross} Отзыв отменён.",
+    "feedback_sent": "{yes} Спасибо! Администратор получит твой отзыв.",
+    "feedback_cancelled": "{no} Отзыв отменён.",
 })
 
 TEXTS["en"].update({
@@ -1372,7 +1401,7 @@ TEXTS["en"].update({
         "{stats} /status — database status"
     ),
     "settings_title": "{settings} <b>Choose interface language</b>",
-    "settings_saved": "{check} Language saved: <b>{lang_name}</b>",
+    "settings_saved": "{yes} Language saved: <b>{lang_name}</b>",
     "not_found": (
         "😕 Nothing found for «{query}».\n"
         "{pencil} Check the spelling or try another query.\n"
@@ -1398,8 +1427,8 @@ TEXTS["en"].update({
     "never": "not updated yet",
     "no_error": "none",
     "admin_set_refresh": "⚙️ Current refresh interval: {days} days.\nUse /setrefresh <number> to change (1–90).",
-    "admin_refresh_updated": "{check} Refresh interval set to {days} days.",
-    "admin_refresh_invalid": "{cross} Please enter an integer from 1 to 90.",
+    "admin_refresh_updated": "{yes} Refresh interval set to {days} days.",
+    "admin_refresh_invalid": "{no} Please enter an integer from 1 to 90.",
     "admin_only": "⛔ This command is for the administrator only.",
     "filters_title": "{filters} <b>Search filters</b>\n\nAdjust the parameters and press \"Apply\".",
     "filters_btn_min": "Currency (from): {val}",
@@ -1412,14 +1441,14 @@ TEXTS["en"].update({
     "filters_all": "all",
     "filters_ask_min": "{pencil} Enter minimum price as a number:",
     "filters_ask_max": "{pencil} Enter maximum price as a number, or -1 for unlimited:",
-    "filters_invalid_number": "{cross} Invalid number. Try again:",
-    "filters_invalid_range": "{cross} Minimum can't be greater than maximum:",
-    "filters_invalid_negative": "{cross} Value can't be negative:",
-    "filters_saved": "{check} Value saved",
-    "filters_applied": "{check} Filters applied!",
+    "filters_invalid_number": "{no} Invalid number. Try again:",
+    "filters_invalid_range": "{no} Minimum can't be greater than maximum:",
+    "filters_invalid_negative": "{no} Value can't be negative:",
+    "filters_saved": "{yes} Value saved",
+    "filters_applied": "{yes} Filters applied!",
     "filters_rarity_title": "🏷 <b>Choose rarity</b>",
     "filters_stability_title": "{chart_up} <b>Choose stability</b>",
-    "filters_option_all": "{check} All",
+    "filters_option_all": "All",
     "list_title": "{list} <b>Item catalog</b>",
     "list_empty": "😕 Nothing matches your filters.",
     "list_nav_page": "📄 {page}/{total}",
@@ -1430,12 +1459,12 @@ TEXTS["en"].update({
     "feedback_reason_bad_image": "Wrong image",
     "feedback_reason_other": "Other",
     "feedback_ask_details": "{pencil} Describe the problem or suggest correct translation/name (or /cancel):",
-    "feedback_sent": "{check} Thank you! Administrator will receive your feedback.",
-    "feedback_cancelled": "{cross} Feedback cancelled.",
+    "feedback_sent": "{yes} Thank you! Administrator will receive your feedback.",
+    "feedback_cancelled": "{no} Feedback cancelled.",
 })
 
 # --------------------------------------------------------------------------- #
-# Шрифты и картинки
+# Шрифты и картинки (без изменений)
 # --------------------------------------------------------------------------- #
 
 FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
@@ -1766,9 +1795,9 @@ def build_filters_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMar
 
 def build_rarity_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMarkup:
     buttons = [
-        [make_button(
-            ("✅ " if filters.rarity_slug == "all" else "") + t_em(lang, "filters_option_all"),
-            "filt:set_rarity:all")]
+        [make_button_with_emoji(
+            t_em(lang, "filters_option_all"),
+            "filt:set_rarity:all", icon_name="verify")]  # иконка верификации для "Все"
     ]
     for slug, _label, emoji_char in CATEGORIES:
         mark = "✅ " if filters.rarity_slug == slug else ""
@@ -1781,9 +1810,9 @@ def build_rarity_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboar
 
 def build_stability_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMarkup:
     buttons = [
-        [make_button(
-            ("✅ " if filters.stability_key == "all" else "") + t_em(lang, "filters_option_all"),
-            "filt:set_stability:all")]
+        [make_button_with_emoji(
+            t_em(lang, "filters_option_all"),
+            "filt:set_stability:all", icon_name="verify")]
     ]
     for key, ru_label, emoji_char in STABILITY_FILTER_OPTIONS:
         label = ru_label if lang == "ru" else key.title()
@@ -1970,6 +1999,43 @@ async def cancel_cmd(message: Message, state: FSMContext):
         await message.answer(t_em(lang, "feedback_cancelled"))
     else:
         await message.answer("Нечего отменять.")
+
+
+# Команда для рекламы (админ)
+@dp.message(Command("advertise"))
+async def advertise_cmd(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Нет доступа")
+        return
+    # Ожидаем сообщение с текстом и эмодзи
+    await state.set_state("advertise:wait_text")
+    await message.answer("Отправьте текст с эмодзи, который нужно преобразовать и опубликовать.")
+
+
+@dp.message(F.text, state="advertise:wait_text")
+async def process_advertise(message: Message, state: FSMContext):
+    text = message.text or message.caption or ""
+    entities = message.entities or message.caption_entities or []
+    # Заменяем кастомные эмодзи на HTML теги
+    custom_emojis = sorted(
+        [e for e in entities if e.type == "custom_emoji"],
+        key=lambda e: e.offset, reverse=True
+    )
+    # Переводим в UTF-16-LE для корректных смещений
+    encoded = text.encode("utf-16-le")
+    for e in custom_emojis:
+        start = e.offset * 2
+        end = (e.offset + e.length) * 2
+        replacement = f'<tg-emoji emoji-id="{e.custom_emoji_id}">⬜</tg-emoji>'.encode("utf-16-le")
+        encoded = encoded[:start] + replacement + encoded[end:]
+    processed = encoded.decode("utf-16-le")
+    # Публикуем в канал-хранилище
+    try:
+        await message.bot.send_message(CHANNEL_ID, processed, parse_mode=ParseMode.HTML)
+        await message.answer("Реклама опубликована.")
+    except Exception as e:
+        await message.answer(f"Ошибка: {e}")
+    await state.clear()
 
 
 # Обработчик текстовых сообщений (поиск, ввод фильтров, фидбэк)
@@ -2217,6 +2283,7 @@ if __name__ == "__main__":
     dp.message.register(list_cmd, Command("list"))
     dp.message.register(force_refresh_cmd, Command("refresh12345"))
     dp.message.register(cancel_cmd, Command("cancel"))
+    dp.message.register(advertise_cmd, Command("advertise"))
     dp.message.register(handle_text, F.text)
     dp.callback_query.register(callback_handler)
 
