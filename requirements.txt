@@ -1,4 +1,4 @@
-python-telegram-bot==20.7
+aiogram>=3.17.0
 beautifulsoup4==4.12.2
 requests==2.31.0
 rapidfuzz==3.6.0
