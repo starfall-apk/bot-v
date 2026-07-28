@@ -56,14 +56,15 @@ PORT = int(os.environ.get("PORT", "10000"))
 
 BASE_URL = "https://supremevalues.com"
 
+# Изменённые цвета редкости
 CATEGORIES: list[tuple[str, str, str]] = [
-    ("godlies", "Godly", "🟡"),
+    ("godlies", "Godly", "🟣"),        # розовый (фиолетовый)
     ("chromas", "Chroma", "🌈"),
-    ("legendaries", "Legendary", "🟠"),
-    ("ancients", "Ancient", "🟣"),
-    ("vintages", "Vintage", "🟤"),
-    ("rares", "Rare", "🔵"),
-    ("uncommons", "Uncommon", "🟢"),
+    ("legendaries", "Legendary", "🔴"), # красный
+    ("ancients", "Ancient", "🟠"),
+    ("vintages", "Vintage", "🟡"),      # жёлтый
+    ("rares", "Rare", "🟢"),            # зелёный
+    ("uncommons", "Uncommon", "🔵"),    # голубой
     ("commons", "Common", "⚪"),
 ]
 CATEGORY_SLUGS = [c[0] for c in CATEGORIES]
@@ -86,14 +87,13 @@ logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 try:
     from deep_translator import GoogleTranslator
-
     TRANSLATOR_AVAILABLE = True
 except ImportError:
     TRANSLATOR_AVAILABLE = False
     logger.warning("deep-translator не установлен.")
 
 # --------------------------------------------------------------------------- #
-# Премиум-эмодзи (ID) и обычные fallback
+# Премиум-эмодзи (обновлены ID согласно последнему списку)
 # --------------------------------------------------------------------------- #
 
 PREMIUM = {
@@ -113,11 +113,11 @@ PREMIUM = {
     "gift": 5192879906295397710,
     "left": 5332716632634579071,
     "right": 5332774511613859175,
-    "star": 5461151367559141950,
+    "star": 5325547803936572038,          # звёздочки перед названием
     "fire": 5424972470023104089,
     "info": 5334544901428229844,
     "refresh": 5375338737028841420,
-    "home": 5460755126761312667,
+    "home": 5416041192905265756,          # дом
     "div_dark": 5255779912798710813,
     "div_light": 5256249601832268668,
     "candlestick": 5451882707875276247,
@@ -125,19 +125,19 @@ PREMIUM = {
     "diamond": 5427168083074628963,
     "trash": 5445267414562389170,
     "rainbow": 5409109841538994759,
-    "settings": 5341715473882955310,
-    "loading": 5386367538735104399,
-    "bulb": 5422439311196834318,
-    "pencil": 5406756500108501710,
-    "red_flag": 5395444784611480792,
-    "party": 5416041192905265756,
-    "star2": 5461151367559141950,
-    "alarm": 5438496463044752972,
+    "settings": 5341715473882955310,      # настройки
+    "loading": 5386367538735104399,       # загрузка
+    "bulb": 5422439311196834318,          # лампочка
+    "pencil": 5395444784611480792,        # карандашик
+    "red_flag": 5460755126761312667,      # красный флажок
+    "party": 5461151367559141950,         # хлопушка
+    "star2": 5438496463044752972,         # звезда (альтернативная)
+    "alarm": 5395695537687123235,         # сигнализация
     "top": 5415655814079723871,
     "new": 5382357040008021292,
     "soon": 5440621591387980068,
-    "free": 5422439311196834318,
-    "lock": 5296369303661067030,
+    "free": 5406756500108501710,          # бесплатно
+    "lock": 5296369303661067030,          # замочек
 }
 
 FALLBACK_EMOJI = {
@@ -209,7 +209,6 @@ def emoji(name: str) -> str:
 
 
 def icon_id(name: str) -> Optional[str]:
-    """Возвращает ID эмодзи как строку для icon_custom_emoji_id."""
     if use_premium():
         eid = PREMIUM.get(name)
         if eid:
@@ -536,7 +535,7 @@ def get_ru_name(name_en: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Парсинг
+# Парсинг (полная версия fetch_category и fetch_all_items)
 # --------------------------------------------------------------------------- #
 
 STABILITY_MAP_RU = {
@@ -985,7 +984,7 @@ class StateStore:
         self.known_images: dict[str, str] = {}
         self.translations: dict[str, str] = {}
         self.refresh_interval_days: int = DEFAULT_REFRESH_DAYS
-        self.use_premium_emoji: bool = True  # по умолчанию премиум включены
+        self.use_premium_emoji: bool = True
         self._dirty_event = threading.Event()
         self._stop_event = threading.Event()
         self._debounce_thread: Optional[threading.Thread] = None
@@ -1195,7 +1194,7 @@ class StateStore:
 state_store = StateStore(channel_id=CHANNEL_ID)
 
 # --------------------------------------------------------------------------- #
-# Локализация (исправленные тексты, без {free} и {rainbow})
+# Локализация (исправлены шаблоны, убраны эмодзи из текстов кнопок фильтров)
 # --------------------------------------------------------------------------- #
 
 RARITY_RU_LABELS = {
@@ -1320,10 +1319,11 @@ TEXTS["ru"].update({
     "admin_refresh_invalid": "{cross} Укажите целое число дней от 1 до 90.",
     "admin_only": "⛔ Эта команда доступна только администратору.",
     "filters_title": "{filters} <b>Фильтры поиска</b>\n\nНастрой параметры и нажми «Применить».",
-    "filters_btn_min": "{value} Валюта (от): {val}",
-    "filters_btn_max": "💰 Валюта (до): {val}",
-    "filters_btn_rarity": "🏷 Редкость: {val}",
-    "filters_btn_stability": "{chart_up} Стабильность: {val}",
+    # Тексты кнопок БЕЗ эмодзи, иконки будут добавлены через icon_custom_emoji_id
+    "filters_btn_min": "Валюта (от): {val}",
+    "filters_btn_max": "Валюта (до): {val}",
+    "filters_btn_rarity": "Редкость: {val}",
+    "filters_btn_stability": "Стабильность: {val}",
     "filters_btn_apply": "Применить",
     "filters_btn_reset": "Сбросить",
     "filters_unlimited": "∞ неограниченно",
@@ -1402,10 +1402,10 @@ TEXTS["en"].update({
     "admin_refresh_invalid": "{cross} Please enter an integer from 1 to 90.",
     "admin_only": "⛔ This command is for the administrator only.",
     "filters_title": "{filters} <b>Search filters</b>\n\nAdjust the parameters and press \"Apply\".",
-    "filters_btn_min": "{value} Currency (from): {val}",
-    "filters_btn_max": "💰 Currency (to): {val}",
-    "filters_btn_rarity": "🏷 Rarity: {val}",
-    "filters_btn_stability": "{chart_up} Stability: {val}",
+    "filters_btn_min": "Currency (from): {val}",
+    "filters_btn_max": "Currency (to): {val}",
+    "filters_btn_rarity": "Rarity: {val}",
+    "filters_btn_stability": "Stability: {val}",
     "filters_btn_apply": "Apply",
     "filters_btn_reset": "Reset",
     "filters_unlimited": "∞ unlimited",
@@ -1686,7 +1686,7 @@ def make_button(text: str, callback_data: str, icon_name: str = None, style: str
     if use_premium() and icon_name:
         eid = icon_id(icon_name)
         if eid is not None:
-            kwargs["icon_custom_emoji_id"] = str(eid)  # обязательно строка
+            kwargs["icon_custom_emoji_id"] = str(eid)
     if style:
         kwargs["style"] = style
     return InlineKeyboardButton(**kwargs)
@@ -1694,6 +1694,7 @@ def make_button(text: str, callback_data: str, icon_name: str = None, style: str
 
 def make_button_with_emoji(text: str, callback_data: str, icon_name: str = None, style: str = None) -> InlineKeyboardButton:
     if use_premium() and icon_name:
+        # Текст без эмодзи, иконка будет отдельно
         return make_button(text, callback_data, icon_name=icon_name, style=style)
     else:
         fb = FALLBACK_EMOJI.get(icon_name, "")
@@ -1704,8 +1705,8 @@ def make_button_with_emoji(text: str, callback_data: str, icon_name: str = None,
 def feedback_keyboard(lang: str, item_name: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            make_button_with_emoji("", f"fb:like:{item_name}", icon_name="like", style="primary"),
-            make_button_with_emoji("", f"fb:dislike:{item_name}", icon_name="dislike", style="danger"),
+            make_button_with_emoji(" ", f"fb:like:{item_name}", icon_name="like", style="primary"),
+            make_button_with_emoji(" ", f"fb:dislike:{item_name}", icon_name="dislike", style="danger"),
         ]
     ])
 
@@ -1797,12 +1798,12 @@ def build_stability_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyb
 def build_list_keyboard(lang: str, page: int, total_pages: int) -> InlineKeyboardMarkup:
     nav = []
     if page > 0:
-        nav.append(make_button_with_emoji("", f"list:page:{page - 1}", icon_name="left", style="primary"))
+        nav.append(make_button_with_emoji(" ", f"list:page:{page - 1}", icon_name="left", style="primary"))
     nav.append(InlineKeyboardButton(
         text=t_em(lang, "list_nav_page", page=page + 1, total=max(total_pages, 1)),
         callback_data="list:noop"))
     if page < total_pages - 1:
-        nav.append(make_button_with_emoji("", f"list:page:{page + 1}", icon_name="right", style="primary"))
+        nav.append(make_button_with_emoji(" ", f"list:page:{page + 1}", icon_name="right", style="primary"))
     return InlineKeyboardMarkup(inline_keyboard=[nav])
 
 
