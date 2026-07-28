@@ -91,11 +91,54 @@ try:
     TRANSLATOR_AVAILABLE = True
 except ImportError:
     TRANSLATOR_AVAILABLE = False
-    logger.warning("deep-translator не установлен. Перевод будет использовать встроенный словарь.")
+    logger.warning("deep-translator не установлен.")
 
 # --------------------------------------------------------------------------- #
-# Премиум‑эмодзи для плашек редкости
+# Премиум-эмодзи
 # --------------------------------------------------------------------------- #
+
+PREMIUM = {
+    "wave": 5461117441612462242,
+    "stats": 5231200819986047254,
+    "check": 5206607081334906820,
+    "cross": 5210952531676504517,
+    "like": 5469770542288478598,
+    "dislike": 5472309400536358507,
+    "lang": 5447410659077661506,
+    "filters": 5305265301917549162,
+    "list": 5253742260054409879,
+    "value": 5409048419211682843,
+    "name_tag": 5397782960512444700,
+    "chart_up": 5244837092042750681,
+    "chart_down": 5246762912428603768,
+    "gift": 5192879906295397710,
+    "left": 5237971019884410850,
+    "right": 5240271460202722955,
+    "star": 5325547803936572038,
+    "fire": 5424972470023104089,
+    "info": 5334544901428229844,
+    "refresh": 5375338737028841420,
+    "home": 5460755126761312667,
+    "div_dark": 5255779912798710813,
+    "div_light": 5256249601832268668,
+    "candlestick": 5451882707875276247,
+    "plus": 5397916757333654639,
+    "diamond": 5427168083074628963,
+    "trash": 5445267414562389170,
+    "rainbow": 5296369303661067030,
+    "settings": 5409109841538994759,
+    "loading": 5305265301917549162,
+    "bulb": 5386367538735104399,
+    "pencil": 5406756500108501710,
+    "red_flag": 5395444784611480792,
+    "party": 5416041192905265756,
+    "star2": 5461151367559141950,
+    "alarm": 5438496463044752972,
+    "top": 5415655814079723871,
+    "new": 5382357040008021292,
+    "soon": 5440621591387980068,
+    "free": 5422439311196834318,
+}
 
 PLATE_EMOJI_IDS: dict[str, tuple[int, int, int]] = {
     "godlies":    (5424896822764152247, 5424710739011084749, 5424601088496020066),
@@ -108,17 +151,24 @@ PLATE_EMOJI_IDS: dict[str, tuple[int, int, int]] = {
     "vintages":   (5424932062970817364, 5424601324719219065, 5424800460877896182),
 }
 
+def emoji(name: str) -> str:
+    eid = PREMIUM.get(name)
+    if not eid:
+        return f"[{name}]"
+    return f'<tg-emoji emoji-id="{eid}">⬜</tg-emoji>'
+
+def divider() -> str:
+    return (emoji("div_dark") + emoji("div_light")) * 3
+
 def rarity_plate_html(slug: str) -> str:
-    """Возвращает HTML‑строку из трёх премиум‑эмодзи для указанной редкости."""
     ids = PLATE_EMOJI_IDS.get(slug)
     if not ids:
-        # fallback – старый значок
         return f"{RARITY_EMOJI.get(slug, '❓')}"
     parts = [f'<tg-emoji emoji-id="{eid}">⬜</tg-emoji>' for eid in ids]
     return "".join(parts)
 
 # --------------------------------------------------------------------------- #
-# Модель данных предмета
+# Модель Item
 # --------------------------------------------------------------------------- #
 
 @dataclass
@@ -189,9 +239,7 @@ EN_LAYOUT_TO_RU = str.maketrans(
 )
 
 def strip_accents(text: str) -> str:
-    return "".join(
-        c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)
-    )
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
 
 def normalize_text(text: str) -> str:
     text = strip_accents(text.lower())
@@ -227,7 +275,7 @@ def generate_query_variants(raw_query: str) -> list[str]:
     return list(variants)
 
 # --------------------------------------------------------------------------- #
-# Перевод (словарь + авто‑разбор + опциональный Google)
+# Перевод
 # --------------------------------------------------------------------------- #
 
 ROOT_TRANSLATIONS: dict[str, str] = {
@@ -285,40 +333,23 @@ COMPOUND_SUFFIXES: list[str] = [
 ]
 
 MERGED_COMPOUND_OVERRIDES: dict[str, str] = {
-    "icewing": "Ледокрыло",
-    "icebreaker": "Ледокол",
-    "icecrusher": "Ледокрушитель",
-    "icepiercer": "Ледопронзатель",
-    "iceblaster": "Ледяной бластер",
-    "icebeam": "Ледяной луч",
-    "darkshot": "Тёмный выстрел",
-    "darksword": "Тёмный меч",
-    "darkbringer": "Несущий тьму",
-    "lightbringer": "Несущий свет",
-    "watergun": "Водный пистолет",
-    "snowcannon": "Снежная пушка",
-    "lugercane": "Трость-Люгер",
-    "gingerluger": "Имбирный Люгер",
-    "hallowgun": "Хэллоу-пистолет",
-    "hallowscythe": "Коса Хэллоуина",
-    "plasmabeam": "Плазменный луч",
-    "plasmablade": "Плазменное лезвие",
-    "bioblade": "Биолезвие",
-    "frostsaber": "Морозная сабля",
-    "gingerblade": "Имбирное лезвие",
-    "boneblade": "Костяное лезвие",
-    "ghostblade": "Лезвие призрака",
-    "nightblade": "Ночное лезвие",
-    "eggblade": "Лезвие-яйцо",
-    "cookieblade": "Лезвие-печенье",
-    "cookiecane": "Печенье-трость",
-    "swirlyblade": "Крутящийся клинок",
-    "swirlygun": "Спиральный пистолет",
-    "hallowblade": "Клинок Хэллоуина",
-    "hallowsblade": "Клинок Хэллоуина",
-    "elderwoodscythe": "Коса Элдервуд",
-    "eternalcane": "Вечная трость",
-    "batwing": "Летучее крыло",
+    "icewing": "Ледокрыло", "icebreaker": "Ледокол",
+    "icecrusher": "Ледокрушитель", "icepiercer": "Ледопронзатель",
+    "iceblaster": "Ледяной бластер", "icebeam": "Ледяной луч",
+    "darkshot": "Тёмный выстрел", "darksword": "Тёмный меч",
+    "darkbringer": "Несущий тьму", "lightbringer": "Несущий свет",
+    "watergun": "Водный пистолет", "snowcannon": "Снежная пушка",
+    "lugercane": "Трость-Люгер", "gingerluger": "Имбирный Люгер",
+    "hallowgun": "Хэллоу-пистолет", "hallowscythe": "Коса Хэллоуина",
+    "plasmabeam": "Плазменный луч", "plasmablade": "Плазменное лезвие",
+    "bioblade": "Биолезвие", "frostsaber": "Морозная сабля",
+    "gingerblade": "Имбирное лезвие", "boneblade": "Костяное лезвие",
+    "ghostblade": "Лезвие призрака", "nightblade": "Ночное лезвие",
+    "eggblade": "Лезвие-яйцо", "cookieblade": "Лезвие-печенье",
+    "cookiecane": "Печенье-трость", "swirlyblade": "Крутящийся клинок",
+    "swirlygun": "Спиральный пистолет", "hallowblade": "Клинок Хэллоуина",
+    "hallowsblade": "Клинок Хэллоуина", "elderwoodscythe": "Коса Элдервуд",
+    "eternalcane": "Вечная трость", "batwing": "Летучее крыло",
     "makeshift": "Временный",
 }
 
@@ -342,7 +373,7 @@ ITEM_ALIASES: dict[str, list[str]] = {
 }
 
 def _normalize_apostrophe(text: str) -> str:
-    return text.replace("’", "'")
+    return text.replace("'", "'")
 
 def _split_compound_word(word: str) -> list[str]:
     lower = word.lower()
@@ -431,25 +462,17 @@ def get_ru_name(name_en: str) -> str:
 # --------------------------------------------------------------------------- #
 
 STABILITY_MAP_RU = {
-    "stable": "Стабилен",
-    "doing well": "Растёт в цене",
-    "fluctuating": "Нестабилен",
-    "underpaid for": "Недооценён",
-    "unstable": "Нестабилен",
-    "hoarded": "Придерживают",
-    "rising": "Растёт в цене",
-    "dropping": "Падает в цене",
-    "receding": "Снижается",
-    "improving": "Улучшается",
+    "stable": "Стабилен", "doing well": "Растёт в цене",
+    "fluctuating": "Нестабилен", "underpaid for": "Недооценён",
+    "unstable": "Нестабилен", "hoarded": "Придерживают",
+    "rising": "Растёт в цене", "dropping": "Падает в цене",
+    "receding": "Снижается", "improving": "Улучшается",
 }
 
 STABILITY_FILTER_OPTIONS: list[tuple[str, str, str]] = [
-    ("stable", "Стабилен", "🟢"),
-    ("doing well", "Растёт в цене", "📈"),
-    ("fluctuating", "Нестабилен", "🔀"),
-    ("underpaid for", "Недооценён", "💎"),
-    ("unstable", "Нестабилен", "⚠️"),
-    ("hoarded", "Придерживают", "🧲"),
+    ("stable", "Стабилен", "🟢"), ("doing well", "Растёт в цене", "📈"),
+    ("fluctuating", "Нестабилен", "🔀"), ("underpaid for", "Недооценён", "💎"),
+    ("unstable", "Нестабилен", "⚠️"), ("hoarded", "Придерживают", "🧲"),
     ("dropping", "Падает в цене", "📉"),
 ]
 
@@ -484,7 +507,7 @@ def _strip_name_tags(name: str) -> str:
     return _BRACKET_TAG_RE.sub(" ", name).strip()
 
 def guess_image_filenames(display_name: str) -> list[str]:
-    clean = _strip_name_tags(display_name).replace("’", "'")
+    clean = _strip_name_tags(display_name).replace("'", "'")
     is_chroma = False
     words = clean.split()
     if words and words[0].lower() in ("chroma", "c.", "c"):
@@ -528,8 +551,7 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
     api_url = f"https://api.scrapingant.com/v2/general?url={target_url}&x-api-key={SCRAPINGANT_API_KEY}&browser=true"
     request_headers = {
         "User-Agent": "Mozilla/5.0 (compatible; MM2ValuesBot/1.0)",
-        "Accept": "application/json",
-        "Connection": "close",
+        "Accept": "application/json", "Connection": "close",
     }
     last_error = None
     resp = None
@@ -560,9 +582,7 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
             logger.info("Ожидание %.1f сек. перед повторной попыткой...", delay)
             time.sleep(delay)
     else:
-        raise RuntimeError(
-            f"Не удалось загрузить категорию '{slug}' после {MAX_RETRIES} попыток (последняя ошибка: {last_error})"
-        )
+        raise RuntimeError(f"Не удалось загрузить категорию '{slug}' после {MAX_RETRIES} попыток (последняя ошибка: {last_error})")
     soup = BeautifulSoup(resp.text, "html.parser")
     items: list[Item] = []
     seen_names: set[str] = set()
@@ -629,16 +649,10 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
             if m:
                 origin = m.group(1).strip()
         items.append(Item(
-            name=display_name,
-            category_slug=slug,
-            rarity=rarity_label,
-            value=value_int,
-            value_display=value_display,
-            ranged_value=None,
-            stability=stability,
-            image_url=image_url,
-            image_url_candidates=image_candidates,
-            origin=origin,
+            name=display_name, category_slug=slug, rarity=rarity_label,
+            value=value_int, value_display=value_display, ranged_value=None,
+            stability=stability, image_url=image_url,
+            image_url_candidates=image_candidates, origin=origin,
         ))
     return items
 
@@ -655,7 +669,7 @@ def fetch_all_items() -> list[Item]:
     return all_items
 
 # --------------------------------------------------------------------------- #
-# Структура поиска и Кэш
+# Поиск и Кэш
 # --------------------------------------------------------------------------- #
 
 @dataclass
@@ -696,7 +710,7 @@ class ValuesCache:
         try:
             items = fetch_all_items()
             if not items:
-                raise RuntimeError("Парсинг вернул 0 предметов — проверьте API ключ или структуру сайта.")
+                raise RuntimeError("Парсинг вернул 0 предметов.")
             known = state_store.load_known_image_urls()
             for item in items:
                 key = normalize_text(item.name)
@@ -810,7 +824,7 @@ class ValuesCache:
 cache = ValuesCache()
 
 # --------------------------------------------------------------------------- #
-# Настройки и хранилище состояния (приватный Telegram-канал)
+# StateStore
 # --------------------------------------------------------------------------- #
 
 DEFAULT_LANG = "ru"
@@ -821,16 +835,11 @@ DEBOUNCE_SECONDS = 20.0
 
 CHANNEL_ID_RAW = os.environ.get("CHANNEL_ID")
 if not CHANNEL_ID_RAW:
-    raise RuntimeError(
-        "Не задан CHANNEL_ID. Установите переменную окружения CHANNEL_ID "
-        "с числовым ID приватного канала (вида -100XXXXXXXXXX), в который "
-        "бот добавлен администратором с правами публикации и закрепления."
-    )
+    raise RuntimeError("Не задан CHANNEL_ID.")
 try:
     CHANNEL_ID = int(CHANNEL_ID_RAW)
 except ValueError:
-    raise RuntimeError("CHANNEL_ID должен быть числом, например -1001234567890.")
-
+    raise RuntimeError("CHANNEL_ID должен быть числом.")
 
 @dataclass
 class ItemFilters:
@@ -841,12 +850,7 @@ class ItemFilters:
 
     @property
     def is_empty(self) -> bool:
-        return (
-            self.min_value == 0
-            and self.max_value == -1
-            and self.rarity_slug == "all"
-            and self.stability_key == "all"
-        )
+        return self.min_value == 0 and self.max_value == -1 and self.rarity_slug == "all" and self.stability_key == "all"
 
     def matches(self, item: Item) -> bool:
         if item.value is not None:
@@ -865,22 +869,11 @@ class ItemFilters:
         return True
 
     def to_dict(self) -> dict:
-        return {
-            "min_value": self.min_value,
-            "max_value": self.max_value,
-            "rarity_slug": self.rarity_slug,
-            "stability_key": self.stability_key,
-        }
+        return {"min_value": self.min_value, "max_value": self.max_value, "rarity_slug": self.rarity_slug, "stability_key": self.stability_key}
 
     @staticmethod
     def from_dict(d: dict) -> "ItemFilters":
-        return ItemFilters(
-            min_value=int(d.get("min_value", 0)),
-            max_value=int(d.get("max_value", -1)),
-            rarity_slug=str(d.get("rarity_slug", "all")),
-            stability_key=str(d.get("stability_key", "all")),
-        )
-
+        return ItemFilters(min_value=int(d.get("min_value", 0)), max_value=int(d.get("max_value", -1)), rarity_slug=str(d.get("rarity_slug", "all")), stability_key=str(d.get("stability_key", "all")))
 
 class StateStore:
     def __init__(self, channel_id: int) -> None:
@@ -891,7 +884,6 @@ class StateStore:
         self.known_images: dict[str, str] = {}
         self.translations: dict[str, str] = {}
         self.refresh_interval_days: int = DEFAULT_REFRESH_DAYS
-
         self._dirty_event = threading.Event()
         self._stop_event = threading.Event()
         self._debounce_thread: Optional[threading.Thread] = None
@@ -899,8 +891,7 @@ class StateStore:
     def _to_state_dict(self) -> dict:
         with self._lock:
             return {
-                "version": 2,
-                "saved_at": time.time(),
+                "version": 2, "saved_at": time.time(),
                 "settings": {
                     "refresh_interval_days": self.refresh_interval_days,
                     "user_langs": dict(self.user_langs),
@@ -908,11 +899,7 @@ class StateStore:
                     "known_images": dict(self.known_images),
                     "translations": dict(self.translations),
                 },
-                "cache": {
-                    "last_updated": cache.last_updated or None,
-                    "last_error": cache.last_error,
-                    "items": cache.export_items(),
-                },
+                "cache": {"last_updated": cache.last_updated or None, "last_error": cache.last_error, "items": cache.export_items()},
             }
 
     def _load_state_dict(self, data: dict) -> None:
@@ -944,7 +931,6 @@ class StateStore:
             return False
         pinned = chat_data.get("result", {}).get("pinned_message")
         if not pinned:
-            logger.info("В канале-хранилище пока нет закреплённого снапшота.")
             return False
         document = pinned.get("document")
         if not document:
@@ -967,7 +953,7 @@ class StateStore:
             logger.exception("Не удалось скачать/распарсить снапшот из канала")
             return False
         self._load_state_dict(state)
-        logger.info("Состояние восстановлено из канала: %d предметов, %d переводов.", cache.size, len(self.translations))
+        logger.info("Состояние восстановлено: %d предметов, %d переводов.", cache.size, len(self.translations))
         return True
 
     def save_to_channel_now(self) -> bool:
@@ -979,22 +965,13 @@ class StateStore:
                 tmp_path = tmp.name
             api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
             with open(tmp_path, "rb") as f:
-                send_resp = requests.post(
-                    f"{api_base}/sendDocument",
-                    data={"chat_id": self.channel_id, "disable_notification": True},
-                    files={"document": (STATE_FILENAME, f, "application/json")},
-                    timeout=60,
-                )
+                send_resp = requests.post(f"{api_base}/sendDocument", data={"chat_id": self.channel_id, "disable_notification": True}, files={"document": (STATE_FILENAME, f, "application/json")}, timeout=60)
             send_resp.raise_for_status()
             send_data = send_resp.json()
             if not send_data.get("ok"):
                 return False
             message_id = send_data["result"]["message_id"]
-            requests.post(
-                f"{api_base}/pinChatMessage",
-                data={"chat_id": self.channel_id, "message_id": message_id, "disable_notification": True},
-                timeout=20,
-            )
+            requests.post(f"{api_base}/pinChatMessage", data={"chat_id": self.channel_id, "message_id": message_id, "disable_notification": True}, timeout=20)
             logger.info("Снапшот сохранён и закреплён.")
             return True
         except Exception:
@@ -1094,7 +1071,6 @@ class StateStore:
             self.translations[key] = ru_text
         self.mark_dirty()
 
-
 state_store = StateStore(channel_id=CHANNEL_ID)
 
 # --------------------------------------------------------------------------- #
@@ -1102,14 +1078,9 @@ state_store = StateStore(channel_id=CHANNEL_ID)
 # --------------------------------------------------------------------------- #
 
 RARITY_RU_LABELS = {
-    "godlies": "Godly",
-    "chromas": "Chroma",
-    "legendaries": "Legendary",
-    "ancients": "Ancient",
-    "vintages": "Vintage",
-    "rares": "Rare",
-    "uncommons": "Uncommon",
-    "commons": "Common",
+    "godlies": "Godly", "chromas": "Chroma", "legendaries": "Legendary",
+    "ancients": "Ancient", "vintages": "Vintage", "rares": "Rare",
+    "uncommons": "Uncommon", "commons": "Common",
 }
 
 def localized_stability(lang: str, stability_en: str) -> str:
@@ -1134,125 +1105,134 @@ def rarity_label_localized(lang: str, slug: str) -> str:
 
 TEXTS: dict[str, dict[str, str]] = {"ru": {}, "en": {}}
 
+W = emoji("wave")
+S = emoji("stats")
+CH = emoji("check")
+CR = emoji("cross")
+LI = emoji("like")
+DI = emoji("dislike")
+LA = emoji("lang")
+FI = emoji("filters")
+LS = emoji("list")
+VA = emoji("value")
+NA = emoji("name_tag")
+CU = emoji("chart_up")
+CD = emoji("chart_down")
+GI = emoji("gift")
+LE = emoji("left")
+RI = emoji("right")
+ST = emoji("star")
+HO = emoji("home")
+INF = emoji("info")
+REF = emoji("refresh")
+PE = emoji("pencil")
+
+DIV = divider()
+
 TEXTS["ru"].update({
-    "start": (
-        "👋 <b>Привет!</b> Я бот-оценщик ценности предметов Murder Mystery 2.\n\n"
-        "✏️ Просто напиши название предмета на русском или английском "
-        "(опечатки и порядок слов не страшны) — например: <i>Хрома пистолет путешественника</i>, "
-        "<i>Ледокрыло</i> или <i>Nebula</i>.\n\n"
-        "📋 <b>Команды:</b>\n"
-        "🌐 /settings — язык интерфейса\n"
-        "🎚 /filters — настроить фильтры поиска\n"
-        "📜 /list — каталог всех предметов\n"
-        "📊 /status — статус базы данных"
-    ),
-    "help": "ℹ️ Напиши название предмета MM2 — я найду его ценность.\n\n📋 <b>Команды:</b>\n"
-            "🌐 /settings — сменить язык интерфейса\n"
-            "🎚 /filters — настроить фильтры (цена, редкость, стабильность)\n"
-            "📜 /list — список всех предметов (дорогие → дешёвые)\n"
-            "📊 /status — статус базы данных",
-    "settings_title": "🌐 <b>Выберите язык интерфейса</b>",
-    "settings_saved": "✅ Язык сохранён: <b>{lang_name}</b>",
-    "not_found": "😕 Ничего не найдено по запросу «{query}».\n✏️ Проверь написание или попробуй другое название предмета.\n🎚 Возможно, стоит проверить активные /filters.",
+    "start": f"{W} <b>Привет!</b> Я бот-оценщик ценности предметов Murder Mystery 2.\n\n{PE} Просто напиши название предмета на русском или английском — например: <i>Хрома пистолет путешественника</i>, <i>Ледокрыло</i> или <i>Nebula</i>.\n\n📋 <b>Команды:</b>\n{LA} /settings — язык интерфейса\n{FI} /filters — настроить фильтры поиска\n{LS} /list — каталог всех предметов\n{S} /status — статус базы данных",
+    "help": f"{INF} Напиши название предмета MM2 — я найду его ценность.\n\n📋 <b>Команды:</b>\n{LA} /settings — сменить язык интерфейса\n{FI} /filters — настроить фильтры (цена, редкость, стабильность)\n{LS} /list — список всех предметов (дорогие → дешёвые)\n{S} /status — статус базы данных",
+    "settings_title": f"{LA} <b>Выберите язык интерфейса</b>",
+    "settings_saved": f"{CH} Язык сохранён: <b>{{lang_name}}</b>",
+    "not_found": f"😕 Ничего не найдено по запросу «{{query}}».\n{PE} Проверь написание или попробуй другое название предмета.\n{FI} Возможно, стоит проверить активные /filters.",
     "value_label": "Примерная стоимость",
     "status_label": "Категория",
     "stability_label": "Стабильность",
     "origin_label": "Событие",
     "unknown_stability": "Неизвестно",
-    "cache_empty": "⏳ База данных ещё загружается, попробуй через минуту.",
-    "status_report": "📊 Предметов в базе: <b>{count}</b>\n🕒 Последнее обновление: <b>{last_update}</b>\n⚠️ Ошибка последнего обновления: <b>{error}</b>\n💾 Хранилище: приватный Telegram-канал",
-    "status_report_ok": "📊 Предметов в базе: <b>{count}</b>\n🕒 Последнее обновление: <b>{last_update}</b>\n💾 Хранилище: приватный Telegram-канал",
+    "cache_empty": f"⏳ База данных ещё загружается, попробуй через минуту.",
+    "status_report": f"{S} Предметов в базе: <b>{{count}}</b>\n🕒 Последнее обновление: <b>{{last_update}}</b>\n⚠️ Ошибка последнего обновления: <b>{{error}}</b>\n💾 Хранилище: приватный Telegram-канал",
+    "status_report_ok": f"{S} Предметов в базе: <b>{{count}}</b>\n🕒 Последнее обновление: <b>{{last_update}}</b>\n💾 Хранилище: приватный Telegram-канал",
     "never": "ещё не обновлялось",
     "no_error": "нет",
-    "admin_set_refresh": "⚙️ Текущий интервал обновления: {days} дн.\nИспользуйте /setrefresh <число> чтобы изменить (от 1 до 90).",
-    "admin_refresh_updated": "✅ Интервал обновления изменён на {days} дн.",
-    "admin_refresh_invalid": "❌ Укажите целое число дней от 1 до 90.",
-    "admin_only": "⛔ Эта команда доступна только администратору.",
-
-    "filters_title": "🎚 <b>Фильтры поиска</b>\n\nНастрой параметры и нажми «Применить».",
-    "filters_btn_min": "💵 Валюта (от): {value}",
-    "filters_btn_max": "💰 Валюта (до): {value}",
-    "filters_btn_rarity": "🏷 Редкость: {value}",
-    "filters_btn_stability": "📈 Стабильность: {value}",
-    "filters_btn_apply": "✅ Применить",
-    "filters_btn_reset": "♻️ Сбросить",
+    "admin_set_refresh": f"⚙️ Текущий интервал обновления: {{days}} дн.\nИспользуйте /setrefresh <число> чтобы изменить (от 1 до 90).",
+    "admin_refresh_updated": f"{CH} Интервал обновления изменён на {{days}} дн.",
+    "admin_refresh_invalid": f"{CR} Укажите целое число дней от 1 до 90.",
+    "admin_only": f"⛔ Эта команда доступна только администратору.",
+    "filters_title": f"{FI} <b>Фильтры поиска</b>\n\nНастрой параметры и нажми «Применить».",
+    "filters_btn_min": f"{VA} Валюта (от): {{value}}",
+    "filters_btn_max": f"💰 Валюта (до): {{value}}",
+    "filters_btn_rarity": f"🏷 Редкость: {{value}}",
+    "filters_btn_stability": f"{CU} Стабильность: {{value}}",
+    "filters_btn_apply": f"{CH} Применить",
+    "filters_btn_reset": f"♻️ Сбросить",
     "filters_unlimited": "∞ неограниченно",
     "filters_all": "все",
-    "filters_ask_min": "✏️ Введи <b>минимальное</b> значение цены числом (например: 1000):",
-    "filters_ask_max": "✏️ Введи <b>максимальное</b> значение цены числом, либо -1 для «неограниченно»:",
-    "filters_invalid_number": "❌ Это не похоже на корректное число. Попробуй ещё раз:",
-    "filters_invalid_range": "❌ Минимум не может быть больше максимума. Попробуй ещё раз:",
-    "filters_invalid_negative": "❌ Значение не может быть отрицательным (кроме -1 для «неограниченно»). Попробуй ещё раз:",
-    "filters_saved": "✅ Значение сохранено",
-    "filters_applied": "✅ Фильтры применены!",
-    "filters_rarity_title": "🏷 <b>Выберите редкость</b>",
-    "filters_stability_title": "📈 <b>Выберите стабильность</b>",
-    "filters_option_all": "✅ Все",
-    "list_title": "📜 <b>Каталог предметов</b> (дорогие → дешёвые)",
-    "list_empty": "😕 По заданным фильтрам ничего не найдено. Проверь /filters.",
+    "filters_ask_min": f"{PE} Введи <b>минимальное</b> значение цены числом (например: 1000):",
+    "filters_ask_max": f"{PE} Введи <b>максимальное</b> значение цены числом, либо -1 для «неограниченно»:",
+    "filters_invalid_number": f"{CR} Это не похоже на корректное число. Попробуй ещё раз:",
+    "filters_invalid_range": f"{CR} Минимум не может быть больше максимума. Попробуй ещё раз:",
+    "filters_invalid_negative": f"{CR} Значение не может быть отрицательным (кроме -1 для «неограниченно»). Попробуй ещё раз:",
+    "filters_saved": f"{CH} Значение сохранено",
+    "filters_applied": f"{CH} Фильтры применены!",
+    "filters_rarity_title": f"🏷 <b>Выберите редкость</b>",
+    "filters_stability_title": f"{CU} <b>Выберите стабильность</b>",
+    "filters_option_all": f"{CH} Все",
+    "list_title": f"{LS} <b>Каталог предметов</b> (дорогие → дешёвые)",
+    "list_empty": f"😕 По заданным фильтрам ничего не найдено. Проверь /filters.",
     "list_nav_page": "📄 {page}/{total}",
-    "feedback_like": "👍 Спасибо за отзыв!",
-    "feedback_dislike": "👎 Что именно не так?",
+    "feedback_like": f"{LI} Спасибо за отзыв!",
+    "feedback_dislike": f"{DI} Что именно не так?",
     "feedback_reason_bad_result": "Неправильный результат",
     "feedback_reason_bad_translation": "Плохой перевод",
     "feedback_reason_bad_image": "Неверная картинка",
     "feedback_reason_other": "Другое",
-    "feedback_ask_details": "📝 Опиши подробнее или укажи правильный вариант перевода/названия (или нажми /cancel):",
-    "feedback_sent": "✅ Спасибо! Администратор получит твой отзыв.",
-    "feedback_cancelled": "❌ Отзыв отменён.",
+    "feedback_ask_details": f"{PE} Опиши подробнее или укажи правильный вариант перевода/названия (или нажми /cancel):",
+    "feedback_sent": f"{CH} Спасибо! Администратор получит твой отзыв.",
+    "feedback_cancelled": f"{CR} Отзыв отменён.",
 })
 
 TEXTS["en"].update({
-    "start": "👋 <b>Hi!</b> I'm a Murder Mystery 2 item value checker bot.\n\n✏️ Just type an item name in English or Russian — for example: <i>Chroma Traveler's Gun</i>, <i>Icewing</i>.\n\n📋 <b>Commands:</b>\n🌐 /settings — interface language\n🎚 /filters — configure search filters\n📜 /list — item catalog\n📊 /status — database status",
-    "help": "ℹ️ Type an MM2 item name — I'll find its value.\n\n📋 <b>Commands:</b>\n🌐 /settings — change interface language\n🎚 /filters — configure filters\n📜 /list — list of all items\n📊 /status — database status",
-    "settings_title": "🌐 <b>Choose interface language</b>",
-    "settings_saved": "✅ Language saved: <b>{lang_name}</b>",
-    "not_found": "😕 Nothing found for «{query}».\n✏️ Check the spelling or try another query.\n🎚 You may also want to check your active /filters.",
+    "start": f"{W} <b>Hi!</b> I'm a Murder Mystery 2 item value checker bot.\n\n{PE} Just type an item name in English or Russian — for example: <i>Chroma Traveler's Gun</i>, <i>Icewing</i>.\n\n📋 <b>Commands:</b>\n{LA} /settings — interface language\n{FI} /filters — configure search filters\n{LS} /list — item catalog\n{S} /status — database status",
+    "help": f"{INF} Type an MM2 item name — I'll find its value.\n\n📋 <b>Commands:</b>\n{LA} /settings — change interface language\n{FI} /filters — configure filters\n{LS} /list — list of all items\n{S} /status — database status",
+    "settings_title": f"{LA} <b>Choose interface language</b>",
+    "settings_saved": f"{CH} Language saved: <b>{{lang_name}}</b>",
+    "not_found": f"😕 Nothing found for «{{query}}».\n{PE} Check the spelling or try another query.\n{FI} You may also want to check your active /filters.",
     "value_label": "Estimated Value",
     "status_label": "Category",
     "stability_label": "Stability",
     "origin_label": "Origin",
     "unknown_stability": "Unknown",
-    "cache_empty": "⏳ Database is still loading, please try again in a minute.",
-    "status_report": "📊 Items in database: <b>{count}</b>\n🕒 Last update: <b>{last_update}</b>\n⚠️ Last update error: <b>{error}</b>\n💾 Storage: private Telegram channel",
-    "status_report_ok": "📊 Items in database: <b>{count}</b>\n🕒 Last update: <b>{last_update}</b>\n💾 Storage: private Telegram channel",
+    "cache_empty": f"⏳ Database is still loading, please try again in a minute.",
+    "status_report": f"{S} Items in database: <b>{{count}}</b>\n🕒 Last update: <b>{{last_update}}</b>\n⚠️ Last update error: <b>{{error}}</b>\n💾 Storage: private Telegram channel",
+    "status_report_ok": f"{S} Items in database: <b>{{count}}</b>\n🕒 Last update: <b>{{last_update}}</b>\n💾 Storage: private Telegram channel",
     "never": "not updated yet",
     "no_error": "none",
-    "admin_set_refresh": "⚙️ Current refresh interval: {days} days.\nUse /setrefresh <number> to change (1–90).",
-    "admin_refresh_updated": "✅ Refresh interval set to {days} days.",
-    "admin_refresh_invalid": "❌ Please enter an integer from 1 to 90.",
-    "admin_only": "⛔ This command is for the administrator only.",
-    "filters_title": "🎚 <b>Search filters</b>\n\nAdjust the parameters and press \"Apply\".",
-    "filters_btn_min": "💵 Currency (from): {value}",
-    "filters_btn_max": "💰 Currency (to): {value}",
-    "filters_btn_rarity": "🏷 Rarity: {value}",
-    "filters_btn_stability": "📈 Stability: {value}",
-    "filters_btn_apply": "✅ Apply",
-    "filters_btn_reset": "♻️ Reset",
+    "admin_set_refresh": f"⚙️ Current refresh interval: {{days}} days.\nUse /setrefresh <number> to change (1–90).",
+    "admin_refresh_updated": f"{CH} Refresh interval set to {{days}} days.",
+    "admin_refresh_invalid": f"{CR} Please enter an integer from 1 to 90.",
+    "admin_only": f"⛔ This command is for the administrator only.",
+    "filters_title": f"{FI} <b>Search filters</b>\n\nAdjust the parameters and press \"Apply\".",
+    "filters_btn_min": f"{VA} Currency (from): {{value}}",
+    "filters_btn_max": f"💰 Currency (to): {{value}}",
+    "filters_btn_rarity": f"🏷 Rarity: {{value}}",
+    "filters_btn_stability": f"{CU} Stability: {{value}}",
+    "filters_btn_apply": f"{CH} Apply",
+    "filters_btn_reset": f"♻️ Reset",
     "filters_unlimited": "∞ unlimited",
     "filters_all": "all",
-    "filters_ask_min": "✏️ Enter minimum price as a number:",
-    "filters_ask_max": "✏️ Enter maximum price as a number, or -1 for unlimited:",
-    "filters_invalid_number": "❌ Invalid number. Try again:",
-    "filters_invalid_range": "❌ Minimum can't be greater than maximum:",
-    "filters_invalid_negative": "❌ Value can't be negative:",
-    "filters_saved": "✅ Value saved",
-    "filters_applied": "✅ Filters applied!",
-    "filters_rarity_title": "🏷 <b>Choose rarity</b>",
-    "filters_stability_title": "📈 <b>Choose stability</b>",
-    "filters_option_all": "✅ All",
-    "list_title": "📜 <b>Item catalog</b>",
-    "list_empty": "😕 Nothing matches your filters.",
+    "filters_ask_min": f"{PE} Enter minimum price as a number:",
+    "filters_ask_max": f"{PE} Enter maximum price as a number, or -1 for unlimited:",
+    "filters_invalid_number": f"{CR} Invalid number. Try again:",
+    "filters_invalid_range": f"{CR} Minimum can't be greater than maximum:",
+    "filters_invalid_negative": f"{CR} Value can't be negative:",
+    "filters_saved": f"{CH} Value saved",
+    "filters_applied": f"{CH} Filters applied!",
+    "filters_rarity_title": f"🏷 <b>Choose rarity</b>",
+    "filters_stability_title": f"{CU} <b>Choose stability</b>",
+    "filters_option_all": f"{CH} All",
+    "list_title": f"{LS} <b>Item catalog</b>",
+    "list_empty": f"😕 Nothing matches your filters.",
     "list_nav_page": "📄 {page}/{total}",
-    "feedback_like": "👍 Thanks for your feedback!",
-    "feedback_dislike": "👎 What's wrong?",
+    "feedback_like": f"{LI} Thanks for your feedback!",
+    "feedback_dislike": f"{DI} What's wrong?",
     "feedback_reason_bad_result": "Wrong result",
     "feedback_reason_bad_translation": "Bad translation",
     "feedback_reason_bad_image": "Wrong image",
     "feedback_reason_other": "Other",
-    "feedback_ask_details": "📝 Describe the problem or suggest correct translation/name (or /cancel):",
-    "feedback_sent": "✅ Thank you! Administrator will receive your feedback.",
-    "feedback_cancelled": "❌ Feedback cancelled.",
+    "feedback_ask_details": f"{PE} Describe the problem or suggest correct translation/name (or /cancel):",
+    "feedback_sent": f"{CH} Thank you! Administrator will receive your feedback.",
+    "feedback_cancelled": f"{CR} Feedback cancelled.",
 })
 
 def t(lang: str, key: str, **kwargs) -> str:
@@ -1402,25 +1382,16 @@ def download_item_image(item: Item) -> Optional[Image.Image]:
 
 CARD_W, CARD_H = 800, 800
 RARITY_GRADIENTS = {
-    "godlies": ((255,196,64),(120,40,140)),
-    "chromas": ((255,90,205),(70,60,255)),
-    "legendaries": ((255,140,60),(140,30,30)),
-    "ancients": ((170,100,255),(40,20,90)),
-    "vintages": ((190,150,110),(60,40,30)),
-    "rares": ((80,150,255),(20,40,110)),
-    "uncommons": ((80,220,140),(10,60,50)),
-    "commons": ((190,200,210),(60,60,70)),
+    "godlies": ((255,196,64),(120,40,140)), "chromas": ((255,90,205),(70,60,255)),
+    "legendaries": ((255,140,60),(140,30,30)), "ancients": ((170,100,255),(40,20,90)),
+    "vintages": ((190,150,110),(60,40,30)), "rares": ((80,150,255),(20,40,110)),
+    "uncommons": ((80,220,140),(10,60,50)), "commons": ((190,200,210),(60,60,70)),
 }
 DEFAULT_GRADIENT = ((90,90,140),(20,20,40))
 RARITY_ACCENT = {
-    "godlies": (255,210,90),
-    "chromas": (255,110,220),
-    "legendaries": (255,150,70),
-    "ancients": (190,130,255),
-    "vintages": (205,170,130),
-    "rares": (110,170,255),
-    "uncommons": (100,230,160),
-    "commons": (210,215,225),
+    "godlies": (255,210,90), "chromas": (255,110,220), "legendaries": (255,150,70),
+    "ancients": (190,130,255), "vintages": (205,170,130), "rares": (110,170,255),
+    "uncommons": (100,230,160), "commons": (210,215,225),
 }
 
 def _lerp_color(c1, c2, t_):
@@ -1488,21 +1459,21 @@ def format_item_caption(item: Item, lang: str) -> str:
     else:
         title = f"<b>{html.escape(name_en)}</b>"
     lines = [
-        f"✨ {title}",
-        "━━━━━━━━━━━━━━━━━━",
-        f"💰 <b>{t(lang, 'value_label')}:</b> ⛁ <b>{item.value_display or 'N/A'}</b>",
-        f"🏷 <b>{t(lang, 'status_label')}:</b> {plate}",
-        f"📈 <b>{t(lang, 'stability_label')}:</b> {stab_txt}",
+        f"{ST} {title}",
+        DIV,
+        f"{VA} <b>{t(lang, 'value_label')}:</b> ⛁ <b>{item.value_display or 'N/A'}</b>",
+        f"{NA} <b>{t(lang, 'status_label')}:</b> {plate}",
+        f"{CU} <b>{t(lang, 'stability_label')}:</b> {stab_txt}",
     ]
     if item.origin:
-        lines.append(f"🎁 <b>{t(lang, 'origin_label')}:</b> {html.escape(item.origin)}")
+        lines.append(f"{GI} <b>{t(lang, 'origin_label')}:</b> {html.escape(item.origin)}")
     return "\n".join(lines)
 
 def feedback_keyboard(lang: str, item_name: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("👍", callback_data=f"fb:like:{item_name}"),
-            InlineKeyboardButton("👎", callback_data=f"fb:dislike:{item_name}"),
+            InlineKeyboardButton(LI, callback_data=f"fb:like:{item_name}"),
+            InlineKeyboardButton(DI, callback_data=f"fb:dislike:{item_name}"),
         ]
     ])
 
@@ -1515,7 +1486,7 @@ def dislike_reason_keyboard(lang: str, item_name: str) -> InlineKeyboardMarkup:
     ])
 
 # --------------------------------------------------------------------------- #
-# UI и команды
+# UI
 # --------------------------------------------------------------------------- #
 
 LIST_PAGE_SIZE = 8
@@ -1553,7 +1524,7 @@ def build_rarity_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboar
     for slug, _label, emoji in CATEGORIES:
         mark = "✅ " if filters.rarity_slug == slug else ""
         rows.append([InlineKeyboardButton(f"{mark}{emoji} {rarity_label_localized(lang, slug)}", callback_data=f"filt:set_rarity:{slug}")])
-    rows.append([InlineKeyboardButton("⬅️", callback_data="filt:back")])
+    rows.append([InlineKeyboardButton(LE, callback_data="filt:back")])
     return InlineKeyboardMarkup(rows)
 
 def build_stability_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMarkup:
@@ -1562,16 +1533,16 @@ def build_stability_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyb
         label = ru_label if lang == "ru" else key.title()
         mark = "✅ " if filters.stability_key == key else ""
         rows.append([InlineKeyboardButton(f"{mark}{emoji} {label}", callback_data=f"filt:set_stability:{key}")])
-    rows.append([InlineKeyboardButton("⬅️", callback_data="filt:back")])
+    rows.append([InlineKeyboardButton(LE, callback_data="filt:back")])
     return InlineKeyboardMarkup(rows)
 
 def build_list_keyboard(lang: str, page: int, total_pages: int) -> InlineKeyboardMarkup:
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️", callback_data=f"list:page:{page-1}"))
+        nav.append(InlineKeyboardButton(LE, callback_data=f"list:page:{page-1}"))
     nav.append(InlineKeyboardButton(t(lang, "list_nav_page", page=page+1, total=max(total_pages,1)), callback_data="list:noop"))
     if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("➡️", callback_data=f"list:page:{page+1}"))
+        nav.append(InlineKeyboardButton(RI, callback_data=f"list:page:{page+1}"))
     return InlineKeyboardMarkup([nav])
 
 def render_list_page_text(lang: str, items: list[Item], page: int, total_pages: int) -> str:
@@ -1590,10 +1561,7 @@ async def send_item_card(update: Update, context: ContextTypes.DEFAULT_TYPE, ite
     try:
         photo = create_item_image(item, lang)
         await context.bot.send_photo(
-            chat_id=chat_id,
-            photo=photo,
-            caption=caption,
-            parse_mode=ParseMode.HTML,
+            chat_id=chat_id, photo=photo, caption=caption, parse_mode=ParseMode.HTML,
             reply_markup=feedback_keyboard(lang, item.name),
         )
     except Exception:
@@ -1602,6 +1570,10 @@ async def send_item_card(update: Update, context: ContextTypes.DEFAULT_TYPE, ite
             chat_id=chat_id, text=caption, parse_mode=ParseMode.HTML,
             reply_markup=feedback_keyboard(lang, item.name),
         )
+
+# --------------------------------------------------------------------------- #
+# Команды
+# --------------------------------------------------------------------------- #
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = state_store.get_user_lang(update.effective_user.id)
@@ -1748,7 +1720,7 @@ async def force_refresh_command(update: Update, context: ContextTypes.DEFAULT_TY
     if user_id != ADMIN_ID:
         await update.message.reply_text(t(lang, "admin_only"))
         return
-    await update.message.reply_text("🔄 Запускаю принудительное обновление кэша...")
+    await update.message.reply_text(f"{REF} Запускаю принудительное обновление кэша...")
     threading.Thread(target=cache.refresh, daemon=True).start()
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1761,7 +1733,7 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Нечего отменять.")
 
 # --------------------------------------------------------------------------- #
-# Callback Query (включая фидбэк)
+# Callback Query
 # --------------------------------------------------------------------------- #
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1772,14 +1744,20 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     try:
         if data.startswith("fb:like:"):
-            item_name = data.split(":", 2)[2]
             await query.answer(t(lang, "feedback_like"))
             return
 
         if data.startswith("fb:dislike:"):
             item_name = data.split(":", 2)[2]
             await query.answer()
-            await query.edit_message_reply_markup(reply_markup=dislike_reason_keyboard(lang, item_name))
+            try:
+                await query.edit_message_reply_markup(reply_markup=dislike_reason_keyboard(lang, item_name))
+            except BadRequest:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=t(lang, "feedback_dislike"),
+                    reply_markup=dislike_reason_keyboard(lang, item_name),
+                )
             return
 
         if data.startswith("fb_reason:"):
@@ -1789,7 +1767,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             context.user_data["awaiting_feedback"] = item_name
             context.user_data["feedback_reason"] = reason
             await query.answer()
-            await query.edit_message_text(t(lang, "feedback_ask_details"), parse_mode=ParseMode.HTML)
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=t(lang, "feedback_ask_details"),
+                parse_mode=ParseMode.HTML,
+            )
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
             return
 
         if data.startswith("setlang:"):
@@ -1806,6 +1792,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         if data.startswith("filt:"):
             action = data[len("filt:"):]
             filters_obj = state_store.get_user_filters(user_id)
+
             if action == "ask_min":
                 context.user_data["awaiting_filter_input"] = "min"
                 await query.answer()
@@ -1890,7 +1877,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             pass
 
 # --------------------------------------------------------------------------- #
-# Инициализация и сервер
+# Инициализация
 # --------------------------------------------------------------------------- #
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
