@@ -16,7 +16,7 @@ import time
 import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Union
 
 import requests
 from bs4 import BeautifulSoup
@@ -88,13 +88,14 @@ logging.getLogger("telegram.ext.Application").setLevel(logging.WARNING)
 
 try:
     from deep_translator import GoogleTranslator
+
     TRANSLATOR_AVAILABLE = True
 except ImportError:
     TRANSLATOR_AVAILABLE = False
     logger.warning("deep-translator не установлен.")
 
 # --------------------------------------------------------------------------- #
-# Премиум-эмодзи
+# Премиум-эмодзи (ID) и обычные fallback
 # --------------------------------------------------------------------------- #
 
 PREMIUM = {
@@ -138,34 +139,102 @@ PREMIUM = {
     "new": 5382357040008021292,
     "soon": 5440621591387980068,
     "free": 5422439311196834318,
+    "lock": 5222444124698853913,  # замочек
+}
+
+# Fallback-символы на случай отключения премиум-эмодзи
+FALLBACK_EMOJI = {
+    "wave": "👋",
+    "stats": "📊",
+    "check": "✔️",
+    "cross": "❌",
+    "like": "👍",
+    "dislike": "👎",
+    "lang": "🌐",
+    "filters": "🎚",
+    "list": "📜",
+    "value": "💵",
+    "name_tag": "📌",
+    "chart_up": "📈",
+    "chart_down": "📉",
+    "gift": "🎁",
+    "left": "⬅️",
+    "right": "➡️",
+    "star": "✨",
+    "fire": "🔥",
+    "info": "ℹ️",
+    "refresh": "🔄",
+    "home": "🏠",
+    "div_dark": "⬛",
+    "div_light": "⬜",
+    "candlestick": "🕯",
+    "plus": "➕",
+    "diamond": "💎",
+    "trash": "🗑",
+    "rainbow": "🌈",
+    "settings": "⚙️",
+    "loading": "⌛",
+    "bulb": "💡",
+    "pencil": "✏️",
+    "red_flag": "🚩",
+    "party": "🎉",
+    "star2": "⭐",
+    "alarm": "🚨",
+    "top": "🔝",
+    "new": "🆕",
+    "soon": "🔜",
+    "free": "🆓",
+    "lock": "🔒",
 }
 
 PLATE_EMOJI_IDS: dict[str, tuple[int, int, int]] = {
-    "godlies":    (5424896822764152247, 5424710739011084749, 5424601088496020066),
-    "ancients":   (5424809669287782271, 5424947511968182015, 5422360356813053692),
-    "rares":      (5424637106091763719, 5424968492883423047, 5424736341311139342),
-    "uncommons":  (5424827648020880967, 5425146089781109016, 5424852906723549420),
-    "commons":    (5425061148212897338, 5422488024715927278, 5424705030999548016),
-    "chromas":    (5424594066224496687, 5424594268087953477, 5424693267084126572),
-    "legendaries":(5424716103425237337, 5424782550864274577, 5425120646394851617),
-    "vintages":   (5424932062970817364, 5424601324719219065, 5424800460877896182),
+    "godlies": (5424896822764152247, 5424710739011084749, 5424601088496020066),
+    "ancients": (5424809669287782271, 5424947511968182015, 5422360356813053692),
+    "rares": (5424637106091763719, 5424968492883423047, 5424736341311139342),
+    "uncommons": (5424827648020880967, 5425146089781109016, 5424852906723549420),
+    "commons": (5425061148212897338, 5422488024715927278, 5424705030999548016),
+    "chromas": (5424594066224496687, 5424594268087953477, 5424693267084126572),
+    "legendaries": (5424716103425237337, 5424782550864274577, 5425120646394851617),
+    "vintages": (5424932062970817364, 5424601324719219065, 5424800460877896182),
 }
 
+
+def use_premium() -> bool:
+    """Возвращает True, если разрешены премиум-эмодзи."""
+    return state_store.get_use_premium_emoji()
+
+
 def emoji(name: str) -> str:
-    eid = PREMIUM.get(name)
-    if not eid:
-        return f"[{name}]"
-    return f'<tg-emoji emoji-id="{eid}">⬜</tg-emoji>'
+    """Возвращает HTML-тег премиум-эмодзи или обычный символ."""
+    if use_premium():
+        eid = PREMIUM.get(name)
+        if eid:
+            return f'<tg-emoji emoji-id="{eid}">⬜</tg-emoji>'
+    return FALLBACK_EMOJI.get(name, f"[{name}]")
+
+
+def icon_id(name: str) -> Optional[str]:
+    """Возвращает ID эмодзи для использования в icon_custom_emoji_id кнопки."""
+    if use_premium():
+        eid = PREMIUM.get(name)
+        if eid:
+            return str(eid)
+    return None
+
 
 def divider() -> str:
-    return (emoji("div_dark") + emoji("div_light")) * 3
+    if use_premium():
+        return (emoji("div_dark") + emoji("div_light")) * 3
+    return "━━━━━━━━━━━━━━━━━━"
+
 
 def rarity_plate_html(slug: str) -> str:
-    ids = PLATE_EMOJI_IDS.get(slug)
-    if not ids:
-        return f"{RARITY_EMOJI.get(slug, '❓')}"
-    parts = [f'<tg-emoji emoji-id="{eid}">⬜</tg-emoji>' for eid in ids]
-    return "".join(parts)
+    if use_premium():
+        ids = PLATE_EMOJI_IDS.get(slug)
+        if ids:
+            return "".join(f'<tg-emoji emoji-id="{eid}">⬜</tg-emoji>' for eid in ids)
+    return RARITY_EMOJI.get(slug, "❓")
+
 
 # --------------------------------------------------------------------------- #
 # Модель Item
@@ -217,6 +286,7 @@ class Item:
             origin=d.get("origin", ""),
         )
 
+
 # --------------------------------------------------------------------------- #
 # Нормализация
 # --------------------------------------------------------------------------- #
@@ -238,21 +308,26 @@ EN_LAYOUT_TO_RU = str.maketrans(
     "йцукенгшщзхъфывапролджэячсмитьбю.ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,",
 )
 
+
 def strip_accents(text: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+
 
 def normalize_text(text: str) -> str:
     text = strip_accents(text.lower())
     text = re.sub(r"[^a-zа-я0-9]+", " ", text)
     return " ".join(text.split())
 
+
 def token_sorted_text(text: str) -> str:
     words = sorted(re.findall(r"[a-zа-я0-9]+", strip_accents(text.lower())))
     return " ".join(words)
 
+
 def transliterate_ru_to_lat(text: str) -> str:
     text = text.lower()
     return "".join(CYR_TO_LAT.get(ch, ch) for ch in text)
+
 
 def generate_query_variants(raw_query: str) -> list[str]:
     raw = raw_query.strip()
@@ -274,8 +349,9 @@ def generate_query_variants(raw_query: str) -> list[str]:
         variants.add(v)
     return list(variants)
 
+
 # --------------------------------------------------------------------------- #
-# Перевод
+# Перевод (словарь + авто-разбор + Google)
 # --------------------------------------------------------------------------- #
 
 ROOT_TRANSLATIONS: dict[str, str] = {
@@ -372,8 +448,10 @@ ITEM_ALIASES: dict[str, list[str]] = {
     "hallow's blade": ["клинок хэллоуина", "хэллоуинский клинок"],
 }
 
+
 def _normalize_apostrophe(text: str) -> str:
     return text.replace("'", "'")
+
 
 def _split_compound_word(word: str) -> list[str]:
     lower = word.lower()
@@ -382,6 +460,7 @@ def _split_compound_word(word: str) -> list[str]:
             head = word[: len(word) - len(suffix)]
             return [head, suffix]
     return [word]
+
 
 def _translate_token(token: str) -> str:
     normalized = _normalize_apostrophe(token).lower().strip(".,()")
@@ -392,6 +471,7 @@ def _translate_token(token: str) -> str:
         if base in ROOT_TRANSLATIONS:
             return ROOT_TRANSLATIONS[base]
     return token
+
 
 def auto_translate_ru(name_en: str) -> str:
     raw_words = name_en.split()
@@ -430,6 +510,7 @@ def auto_translate_ru(name_en: str) -> str:
         i += 1
     return " ".join(translated_parts)
 
+
 def _google_translate(text_en: str) -> Optional[str]:
     if not TRANSLATOR_AVAILABLE:
         return None
@@ -439,6 +520,7 @@ def _google_translate(text_en: str) -> Optional[str]:
     except Exception as e:
         logger.warning("Google Translate ошибка для '%s': %s", text_en, e)
         return None
+
 
 def get_ru_name(name_en: str) -> str:
     key = name_en.lower().strip()
@@ -456,6 +538,7 @@ def get_ru_name(name_en: str) -> str:
         state_store.save_translation(name_en, gtrans)
         return gtrans
     return name_en
+
 
 # --------------------------------------------------------------------------- #
 # Парсинг
@@ -476,6 +559,7 @@ STABILITY_FILTER_OPTIONS: list[tuple[str, str, str]] = [
     ("dropping", "Падает в цене", "📉"),
 ]
 
+
 def _parse_value_to_int(raw: str) -> Optional[int]:
     raw = raw.strip()
     if not raw or raw.upper() in ("N/A", "NA"):
@@ -484,6 +568,7 @@ def _parse_value_to_int(raw: str) -> Optional[int]:
         return int(raw.replace(",", "").replace(" ", ""))
     except ValueError:
         return None
+
 
 def _normalize_image_src(src: str) -> str:
     src = src.strip()
@@ -500,11 +585,14 @@ def _normalize_image_src(src: str) -> str:
         return BASE_URL + src
     return BASE_URL + "/" + src.lstrip("/")
 
+
 _IMG_STOPWORDS = {"the", "a", "an", "of"}
 _BRACKET_TAG_RE = re.compile(r"\s*[\[\(][^\]\)]*[\]\)]\s*")
 
+
 def _strip_name_tags(name: str) -> str:
     return _BRACKET_TAG_RE.sub(" ", name).strip()
+
 
 def guess_image_filenames(display_name: str) -> list[str]:
     clean = _strip_name_tags(display_name).replace("'", "'")
@@ -515,11 +603,13 @@ def guess_image_filenames(display_name: str) -> list[str]:
         words = words[1:]
     if not words:
         words = clean.split()
+
     def _clean_word(w: str) -> str:
         w = re.sub(r"[^\w']", "", w)
         if w.lower().endswith("'s"):
             w = w[:-2]
         return w
+
     plain_words = [_clean_word(w) for w in words if _clean_word(w)]
     plain_words = [w for w in plain_words if w.lower() not in _IMG_STOPWORDS]
     if not plain_words:
@@ -527,9 +617,11 @@ def guess_image_filenames(display_name: str) -> list[str]:
         plain_words = [fallback_word] if fallback_word else []
     prefix = "C" if is_chroma else ""
     candidates: list[str] = []
+
     def add(name: str):
         if name and name not in candidates:
             candidates.append(name)
+
     joined_nospace = "".join(plain_words)
     joined_underscore = "_".join(plain_words)
     first_word = plain_words[0] if plain_words else ""
@@ -545,6 +637,7 @@ def guess_image_filenames(display_name: str) -> list[str]:
     safe_name = re.sub(r"[^\w\s-]", "", clean).strip().replace(" ", "_")
     add(safe_name)
     return [c for c in candidates if c]
+
 
 def fetch_category(slug: str, rarity_label: str) -> list[Item]:
     target_url = f"{BASE_URL}/mm2/{slug}"
@@ -582,7 +675,8 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
             logger.info("Ожидание %.1f сек. перед повторной попыткой...", delay)
             time.sleep(delay)
     else:
-        raise RuntimeError(f"Не удалось загрузить категорию '{slug}' после {MAX_RETRIES} попыток (последняя ошибка: {last_error})")
+        raise RuntimeError(
+            f"Не удалось загрузить категорию '{slug}' после {MAX_RETRIES} попыток (последняя ошибка: {last_error})")
     soup = BeautifulSoup(resp.text, "html.parser")
     items: list[Item] = []
     seen_names: set[str] = set()
@@ -656,6 +750,7 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
         ))
     return items
 
+
 def fetch_all_items() -> list[Item]:
     all_items: list[Item] = []
     for slug, rarity_label, _emoji in CATEGORIES:
@@ -668,6 +763,7 @@ def fetch_all_items() -> list[Item]:
             logger.exception("Не удалось спарсить категорию '%s'", slug)
     return all_items
 
+
 # --------------------------------------------------------------------------- #
 # Поиск и Кэш
 # --------------------------------------------------------------------------- #
@@ -677,6 +773,7 @@ class SearchEntry:
     key_norm: str
     key_sorted: str
     item_idx: int
+
 
 class ValuesCache:
     def __init__(self) -> None:
@@ -732,7 +829,8 @@ class ValuesCache:
                 self.last_error = str(e)
             state_store.notify_cache_refreshed()
 
-    def search(self, query: str, limit: int = 5, filters: Optional["ItemFilters"] = None) -> list[tuple[Item, float]]:
+    def search(self, query: str, limit: int = 5,
+               filters: Optional["ItemFilters"] = None) -> list[tuple[Item, float]]:
         with self._lock:
             items = self._items
             index = list(self._search_index)
@@ -748,9 +846,11 @@ class ValuesCache:
                 return []
         best_by_idx: dict[int, float] = {}
         CHROMA_WORDS = {"chroma", "хрома", "c"}
+
         def _has_chroma_word(norm_text: str) -> bool:
             tokens = norm_text.split()
             return bool(tokens) and tokens[0] in CHROMA_WORDS
+
         for variant in variants:
             v_norm = normalize_text(variant)
             v_sorted = token_sorted_text(variant)
@@ -821,10 +921,11 @@ class ValuesCache:
             self._items = items
             self._search_index = self._build_search_index(items)
 
+
 cache = ValuesCache()
 
 # --------------------------------------------------------------------------- #
-# StateStore
+# StateStore (добавлен флаг use_premium_emoji)
 # --------------------------------------------------------------------------- #
 
 DEFAULT_LANG = "ru"
@@ -840,6 +941,7 @@ try:
     CHANNEL_ID = int(CHANNEL_ID_RAW)
 except ValueError:
     raise RuntimeError("CHANNEL_ID должен быть числом.")
+
 
 @dataclass
 class ItemFilters:
@@ -869,11 +971,15 @@ class ItemFilters:
         return True
 
     def to_dict(self) -> dict:
-        return {"min_value": self.min_value, "max_value": self.max_value, "rarity_slug": self.rarity_slug, "stability_key": self.stability_key}
+        return {"min_value": self.min_value, "max_value": self.max_value, "rarity_slug": self.rarity_slug,
+                "stability_key": self.stability_key}
 
     @staticmethod
     def from_dict(d: dict) -> "ItemFilters":
-        return ItemFilters(min_value=int(d.get("min_value", 0)), max_value=int(d.get("max_value", -1)), rarity_slug=str(d.get("rarity_slug", "all")), stability_key=str(d.get("stability_key", "all")))
+        return ItemFilters(min_value=int(d.get("min_value", 0)), max_value=int(d.get("max_value", -1)),
+                           rarity_slug=str(d.get("rarity_slug", "all")),
+                           stability_key=str(d.get("stability_key", "all")))
+
 
 class StateStore:
     def __init__(self, channel_id: int) -> None:
@@ -884,6 +990,7 @@ class StateStore:
         self.known_images: dict[str, str] = {}
         self.translations: dict[str, str] = {}
         self.refresh_interval_days: int = DEFAULT_REFRESH_DAYS
+        self.use_premium_emoji: bool = True  # по умолчанию премиум включены
         self._dirty_event = threading.Event()
         self._stop_event = threading.Event()
         self._debounce_thread: Optional[threading.Thread] = None
@@ -891,15 +998,17 @@ class StateStore:
     def _to_state_dict(self) -> dict:
         with self._lock:
             return {
-                "version": 2, "saved_at": time.time(),
+                "version": 3, "saved_at": time.time(),
                 "settings": {
                     "refresh_interval_days": self.refresh_interval_days,
                     "user_langs": dict(self.user_langs),
                     "user_filters": {k: dict(v) for k, v in self.user_filters.items()},
                     "known_images": dict(self.known_images),
                     "translations": dict(self.translations),
+                    "use_premium_emoji": self.use_premium_emoji,
                 },
-                "cache": {"last_updated": cache.last_updated or None, "last_error": cache.last_error, "items": cache.export_items()},
+                "cache": {"last_updated": cache.last_updated or None, "last_error": cache.last_error,
+                          "items": cache.export_items()},
             }
 
     def _load_state_dict(self, data: dict) -> None:
@@ -911,6 +1020,7 @@ class StateStore:
             self.user_filters = {str(k): dict(v) for k, v in (settings.get("user_filters", {}) or {}).items()}
             self.known_images = {str(k): str(v) for k, v in (settings.get("known_images", {}) or {}).items()}
             self.translations = {str(k): str(v) for k, v in (settings.get("translations", {}) or {}).items()}
+            self.use_premium_emoji = bool(settings.get("use_premium_emoji", True))
         raw_items = cache_info.get("items")
         if raw_items:
             cache.load_items(raw_items)
@@ -965,13 +1075,17 @@ class StateStore:
                 tmp_path = tmp.name
             api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
             with open(tmp_path, "rb") as f:
-                send_resp = requests.post(f"{api_base}/sendDocument", data={"chat_id": self.channel_id, "disable_notification": True}, files={"document": (STATE_FILENAME, f, "application/json")}, timeout=60)
+                send_resp = requests.post(f"{api_base}/sendDocument",
+                                          data={"chat_id": self.channel_id, "disable_notification": True},
+                                          files={"document": (STATE_FILENAME, f, "application/json")}, timeout=60)
             send_resp.raise_for_status()
             send_data = send_resp.json()
             if not send_data.get("ok"):
                 return False
             message_id = send_data["result"]["message_id"]
-            requests.post(f"{api_base}/pinChatMessage", data={"chat_id": self.channel_id, "message_id": message_id, "disable_notification": True}, timeout=20)
+            requests.post(f"{api_base}/pinChatMessage",
+                          data={"chat_id": self.channel_id, "message_id": message_id, "disable_notification": True},
+                          timeout=20)
             logger.info("Снапшот сохранён и закреплён.")
             return True
         except Exception:
@@ -1071,6 +1185,18 @@ class StateStore:
             self.translations[key] = ru_text
         self.mark_dirty()
 
+    def get_use_premium_emoji(self) -> bool:
+        with self._lock:
+            return self.use_premium_emoji
+
+    def set_use_premium_emoji(self, value: bool) -> None:
+        with self._lock:
+            if self.use_premium_emoji == value:
+                return
+            self.use_premium_emoji = value
+        self.mark_dirty()
+
+
 state_store = StateStore(channel_id=CHANNEL_ID)
 
 # --------------------------------------------------------------------------- #
@@ -1083,17 +1209,20 @@ RARITY_RU_LABELS = {
     "uncommons": "Uncommon", "commons": "Common",
 }
 
+
 def localized_stability(lang: str, stability_en: str) -> str:
     if lang == "en":
         return stability_en
     key = stability_en.strip().lower()
     return STABILITY_MAP_RU.get(key, stability_en)
 
+
 def stability_label(lang: str, key: str) -> str:
     for k, ru_label, _emoji in STABILITY_FILTER_OPTIONS:
         if k == key:
             return ru_label if lang == "ru" else k.title()
     return key
+
 
 def rarity_label_localized(lang: str, slug: str) -> str:
     for cslug, label, _emoji in CATEGORIES:
@@ -1103,142 +1232,160 @@ def rarity_label_localized(lang: str, slug: str) -> str:
             return label
     return slug
 
+
 TEXTS: dict[str, dict[str, str]] = {"ru": {}, "en": {}}
 
-W = emoji("wave")
-S = emoji("stats")
-CH = emoji("check")
-CR = emoji("cross")
-LI = emoji("like")
-DI = emoji("dislike")
-LA = emoji("lang")
-FI = emoji("filters")
-LS = emoji("list")
-VA = emoji("value")
-NA = emoji("name_tag")
-CU = emoji("chart_up")
-CD = emoji("chart_down")
-GI = emoji("gift")
-LE = emoji("left")
-RI = emoji("right")
-ST = emoji("star")
-HO = emoji("home")
-INF = emoji("info")
-REF = emoji("refresh")
-PE = emoji("pencil")
+# Базовые эмодзи в тексте – они будут разрешаться динамически через t()
+# Но t() не поддерживает вызов emoji(), поэтому мы вставим плейсхолдеры и будем форматировать с kwargs
+# Для удобства определим функцию, которая возвращает словарь с эмодзи
+def emoji_dict() -> dict[str, str]:
+    return {
+        "wave": emoji("wave"),
+        "stats": emoji("stats"),
+        "check": emoji("check"),
+        "cross": emoji("cross"),
+        "like": emoji("like"),
+        "dislike": emoji("dislike"),
+        "lang": emoji("lang"),
+        "filters": emoji("filters"),
+        "list": emoji("list"),
+        "value": emoji("value"),
+        "name_tag": emoji("name_tag"),
+        "chart_up": emoji("chart_up"),
+        "chart_down": emoji("chart_down"),
+        "gift": emoji("gift"),
+        "left": emoji("left"),
+        "right": emoji("right"),
+        "star": emoji("star"),
+        "fire": emoji("fire"),
+        "info": emoji("info"),
+        "refresh": emoji("refresh"),
+        "home": emoji("home"),
+        "settings": emoji("settings"),
+        "pencil": emoji("pencil"),
+        "lock": emoji("lock"),
+    }
 
-DIV = divider()
+def t(lang: str, key: str, **kwargs) -> str:
+    lang = lang if lang in TEXTS else DEFAULT_LANG
+    template = TEXTS[lang].get(key, TEXTS[DEFAULT_LANG].get(key, key))
+    # Подставим эмодзи, если они есть в kwargs
+    return template.format(**kwargs) if kwargs else template
 
+# Заполнение текстов с плейсхолдерами {wave} и т.п.
 TEXTS["ru"].update({
-    "start": f"{W} <b>Привет!</b> Я бот-оценщик ценности предметов Murder Mystery 2.\n\n{PE} Просто напиши название предмета на русском или английском — например: <i>Хрома пистолет путешественника</i>, <i>Ледокрыло</i> или <i>Nebula</i>.\n\n📋 <b>Команды:</b>\n{LA} /settings — язык интерфейса\n{FI} /filters — настроить фильтры поиска\n{LS} /list — каталог всех предметов\n{S} /status — статус базы данных",
-    "help": f"{INF} Напиши название предмета MM2 — я найду его ценность.\n\n📋 <b>Команды:</b>\n{LA} /settings — сменить язык интерфейса\n{FI} /filters — настроить фильтры (цена, редкость, стабильность)\n{LS} /list — список всех предметов (дорогие → дешёвые)\n{S} /status — статус базы данных",
-    "settings_title": f"{LA} <b>Выберите язык интерфейса</b>",
-    "settings_saved": f"{CH} Язык сохранён: <b>{{lang_name}}</b>",
-    "not_found": f"😕 Ничего не найдено по запросу «{{query}}».\n{PE} Проверь написание или попробуй другое название предмета.\n{FI} Возможно, стоит проверить активные /filters.",
+    "start": "{wave} <b>Привет!</b> Я бот-оценщик ценности предметов Murder Mystery 2.\n\n{pencil} Просто напиши название предмета на русском или английском — например: <i>Хрома пистолет путешественника</i>, <i>Ледокрыло</i> или <i>Nebula</i>.\n\n📋 <b>Команды:</b>\n{settings} /settings — язык интерфейса\n{filters} /filters — настроить фильтры поиска\n{list} /list — каталог всех предметов\n{stats} /status — статус базы данных",
+    "help": "{info} Напиши название предмета MM2 — я найду его ценность.\n\n📋 <b>Команды:</b>\n{settings} /settings — сменить язык интерфейса\n{filters} /filters — настроить фильтры (цена, редкость, стабильность)\n{list} /list — список всех предметов (дорогие → дешёвые)\n{stats} /status — статус базы данных",
+    "settings_title": "{settings} <b>Выберите язык интерфейса</b>",
+    "settings_saved": "{check} Язык сохранён: <b>{lang_name}</b>",
+    "not_found": "😕 Ничего не найдено по запросу «{query}».\n{pencil} Проверь написание или попробуй другое название предмета.\n{filters} Возможно, стоит проверить активные /filters.",
     "value_label": "Примерная стоимость",
     "status_label": "Категория",
     "stability_label": "Стабильность",
     "origin_label": "Событие",
     "unknown_stability": "Неизвестно",
-    "cache_empty": f"⏳ База данных ещё загружается, попробуй через минуту.",
-    "status_report": f"{S} Предметов в базе: <b>{{count}}</b>\n🕒 Последнее обновление: <b>{{last_update}}</b>\n⚠️ Ошибка последнего обновления: <b>{{error}}</b>\n💾 Хранилище: приватный Telegram-канал",
-    "status_report_ok": f"{S} Предметов в базе: <b>{{count}}</b>\n🕒 Последнее обновление: <b>{{last_update}}</b>\n💾 Хранилище: приватный Telegram-канал",
+    "cache_empty": "⏳ База данных ещё загружается, попробуй через минуту.",
+    # Статусные сообщения теперь собираются в коде, здесь только текст без эмодзи
+    "status_report": "{stats} Предметов в базе: <b>{count}</b>\n{refresh} Последнее обновление: <b>{last_update}</b>\n⚠️ Ошибка последнего обновления: <b>{error}</b>\n{lock} Хранилище: приватный Telegram-канал",
+    "status_report_ok": "{stats} Предметов в базе: <b>{count}</b>\n{refresh} Последнее обновление: <b>{last_update}</b>\n{lock} Хранилище: приватный Telegram-канал",
     "never": "ещё не обновлялось",
     "no_error": "нет",
-    "admin_set_refresh": f"⚙️ Текущий интервал обновления: {{days}} дн.\nИспользуйте /setrefresh <число> чтобы изменить (от 1 до 90).",
-    "admin_refresh_updated": f"{CH} Интервал обновления изменён на {{days}} дн.",
-    "admin_refresh_invalid": f"{CR} Укажите целое число дней от 1 до 90.",
-    "admin_only": f"⛔ Эта команда доступна только администратору.",
-    "filters_title": f"{FI} <b>Фильтры поиска</b>\n\nНастрой параметры и нажми «Применить».",
-    "filters_btn_min": f"{VA} Валюта (от): {{value}}",
-    "filters_btn_max": f"💰 Валюта (до): {{value}}",
-    "filters_btn_rarity": f"🏷 Редкость: {{value}}",
-    "filters_btn_stability": f"{CU} Стабильность: {{value}}",
-    "filters_btn_apply": f"{CH} Применить",
-    "filters_btn_reset": f"♻️ Сбросить",
+    "admin_set_refresh": "⚙️ Текущий интервал обновления: {days} дн.\nИспользуйте /setrefresh <число> чтобы изменить (от 1 до 90).",
+    "admin_refresh_updated": "{check} Интервал обновления изменён на {days} дн.",
+    "admin_refresh_invalid": "{cross} Укажите целое число дней от 1 до 90.",
+    "admin_only": "⛔ Эта команда доступна только администратору.",
+    "filters_title": "{filters} <b>Фильтры поиска</b>\n\nНастрой параметры и нажми «Применить».",
+    "filters_btn_min": "{value} Валюта (от): {val}",
+    "filters_btn_max": "💰 Валюта (до): {val}",
+    "filters_btn_rarity": "🏷 Редкость: {val}",
+    "filters_btn_stability": "{chart_up} Стабильность: {val}",
+    "filters_btn_apply": "Применить",
+    "filters_btn_reset": "Сбросить",
     "filters_unlimited": "∞ неограниченно",
     "filters_all": "все",
-    "filters_ask_min": f"{PE} Введи <b>минимальное</b> значение цены числом (например: 1000):",
-    "filters_ask_max": f"{PE} Введи <b>максимальное</b> значение цены числом, либо -1 для «неограниченно»:",
-    "filters_invalid_number": f"{CR} Это не похоже на корректное число. Попробуй ещё раз:",
-    "filters_invalid_range": f"{CR} Минимум не может быть больше максимума. Попробуй ещё раз:",
-    "filters_invalid_negative": f"{CR} Значение не может быть отрицательным (кроме -1 для «неограниченно»). Попробуй ещё раз:",
-    "filters_saved": f"{CH} Значение сохранено",
-    "filters_applied": f"{CH} Фильтры применены!",
-    "filters_rarity_title": f"🏷 <b>Выберите редкость</b>",
-    "filters_stability_title": f"{CU} <b>Выберите стабильность</b>",
-    "filters_option_all": f"{CH} Все",
-    "list_title": f"{LS} <b>Каталог предметов</b> (дорогие → дешёвые)",
-    "list_empty": f"😕 По заданным фильтрам ничего не найдено. Проверь /filters.",
+    "filters_ask_min": "{pencil} Введи <b>минимальное</b> значение цены числом (например: 1000):",
+    "filters_ask_max": "{pencil} Введи <b>максимальное</b> значение цены числом, либо -1 для «неограниченно»:",
+    "filters_invalid_number": "{cross} Это не похоже на корректное число. Попробуй ещё раз:",
+    "filters_invalid_range": "{cross} Минимум не может быть больше максимума. Попробуй ещё раз:",
+    "filters_invalid_negative": "{cross} Значение не может быть отрицательным (кроме -1 для «неограниченно»). Попробуй ещё раз:",
+    "filters_saved": "{check} Значение сохранено",
+    "filters_applied": "{check} Фильтры применены!",
+    "filters_rarity_title": "🏷 <b>Выберите редкость</b>",
+    "filters_stability_title": "{chart_up} <b>Выберите стабильность</b>",
+    "filters_option_all": "{check} Все",
+    "list_title": "{list} <b>Каталог предметов</b> (дорогие → дешёвые)",
+    "list_empty": "😕 По заданным фильтрам ничего не найдено. Проверь /filters.",
     "list_nav_page": "📄 {page}/{total}",
-    "feedback_like": f"{LI} Спасибо за отзыв!",
-    "feedback_dislike": f"{DI} Что именно не так?",
+    "feedback_like": "{like} Спасибо за отзыв!",
+    "feedback_dislike": "{dislike} Что именно не так?",
     "feedback_reason_bad_result": "Неправильный результат",
     "feedback_reason_bad_translation": "Плохой перевод",
     "feedback_reason_bad_image": "Неверная картинка",
     "feedback_reason_other": "Другое",
-    "feedback_ask_details": f"{PE} Опиши подробнее или укажи правильный вариант перевода/названия (или нажми /cancel):",
-    "feedback_sent": f"{CH} Спасибо! Администратор получит твой отзыв.",
-    "feedback_cancelled": f"{CR} Отзыв отменён.",
+    "feedback_ask_details": "{pencil} Опиши подробнее или укажи правильный вариант перевода/названия (или нажми /cancel):",
+    "feedback_sent": "{check} Спасибо! Администратор получит твой отзыв.",
+    "feedback_cancelled": "{cross} Отзыв отменён.",
 })
 
 TEXTS["en"].update({
-    "start": f"{W} <b>Hi!</b> I'm a Murder Mystery 2 item value checker bot.\n\n{PE} Just type an item name in English or Russian — for example: <i>Chroma Traveler's Gun</i>, <i>Icewing</i>.\n\n📋 <b>Commands:</b>\n{LA} /settings — interface language\n{FI} /filters — configure search filters\n{LS} /list — item catalog\n{S} /status — database status",
-    "help": f"{INF} Type an MM2 item name — I'll find its value.\n\n📋 <b>Commands:</b>\n{LA} /settings — change interface language\n{FI} /filters — configure filters\n{LS} /list — list of all items\n{S} /status — database status",
-    "settings_title": f"{LA} <b>Choose interface language</b>",
-    "settings_saved": f"{CH} Language saved: <b>{{lang_name}}</b>",
-    "not_found": f"😕 Nothing found for «{{query}}».\n{PE} Check the spelling or try another query.\n{FI} You may also want to check your active /filters.",
+    "start": "{wave} <b>Hi!</b> I'm a Murder Mystery 2 item value checker bot.\n\n{pencil} Just type an item name in English or Russian — for example: <i>Chroma Traveler's Gun</i>, <i>Icewing</i>.\n\n📋 <b>Commands:</b>\n{settings} /settings — interface language\n{filters} /filters — configure search filters\n{list} /list — item catalog\n{stats} /status — database status",
+    "help": "{info} Type an MM2 item name — I'll find its value.\n\n📋 <b>Commands:</b>\n{settings} /settings — change interface language\n{filters} /filters — configure filters\n{list} /list — list of all items\n{stats} /status — database status",
+    "settings_title": "{settings} <b>Choose interface language</b>",
+    "settings_saved": "{check} Language saved: <b>{lang_name}</b>",
+    "not_found": "😕 Nothing found for «{query}».\n{pencil} Check the spelling or try another query.\n{filters} You may also want to check your active /filters.",
     "value_label": "Estimated Value",
     "status_label": "Category",
     "stability_label": "Stability",
     "origin_label": "Origin",
     "unknown_stability": "Unknown",
-    "cache_empty": f"⏳ Database is still loading, please try again in a minute.",
-    "status_report": f"{S} Items in database: <b>{{count}}</b>\n🕒 Last update: <b>{{last_update}}</b>\n⚠️ Last update error: <b>{{error}}</b>\n💾 Storage: private Telegram channel",
-    "status_report_ok": f"{S} Items in database: <b>{{count}}</b>\n🕒 Last update: <b>{{last_update}}</b>\n💾 Storage: private Telegram channel",
+    "cache_empty": "⏳ Database is still loading, please try again in a minute.",
+    "status_report": "{stats} Items in database: <b>{count}</b>\n{refresh} Last update: <b>{last_update}</b>\n⚠️ Last update error: <b>{error}</b>\n{lock} Storage: private Telegram channel",
+    "status_report_ok": "{stats} Items in database: <b>{count}</b>\n{refresh} Last update: <b>{last_update}</b>\n{lock} Storage: private Telegram channel",
     "never": "not updated yet",
     "no_error": "none",
-    "admin_set_refresh": f"⚙️ Current refresh interval: {{days}} days.\nUse /setrefresh <number> to change (1–90).",
-    "admin_refresh_updated": f"{CH} Refresh interval set to {{days}} days.",
-    "admin_refresh_invalid": f"{CR} Please enter an integer from 1 to 90.",
-    "admin_only": f"⛔ This command is for the administrator only.",
-    "filters_title": f"{FI} <b>Search filters</b>\n\nAdjust the parameters and press \"Apply\".",
-    "filters_btn_min": f"{VA} Currency (from): {{value}}",
-    "filters_btn_max": f"💰 Currency (to): {{value}}",
-    "filters_btn_rarity": f"🏷 Rarity: {{value}}",
-    "filters_btn_stability": f"{CU} Stability: {{value}}",
-    "filters_btn_apply": f"{CH} Apply",
-    "filters_btn_reset": f"♻️ Reset",
+    "admin_set_refresh": "⚙️ Current refresh interval: {days} days.\nUse /setrefresh <number> to change (1–90).",
+    "admin_refresh_updated": "{check} Refresh interval set to {days} days.",
+    "admin_refresh_invalid": "{cross} Please enter an integer from 1 to 90.",
+    "admin_only": "⛔ This command is for the administrator only.",
+    "filters_title": "{filters} <b>Search filters</b>\n\nAdjust the parameters and press \"Apply\".",
+    "filters_btn_min": "{value} Currency (from): {val}",
+    "filters_btn_max": "💰 Currency (to): {val}",
+    "filters_btn_rarity": "🏷 Rarity: {val}",
+    "filters_btn_stability": "{chart_up} Stability: {val}",
+    "filters_btn_apply": "Apply",
+    "filters_btn_reset": "Reset",
     "filters_unlimited": "∞ unlimited",
     "filters_all": "all",
-    "filters_ask_min": f"{PE} Enter minimum price as a number:",
-    "filters_ask_max": f"{PE} Enter maximum price as a number, or -1 for unlimited:",
-    "filters_invalid_number": f"{CR} Invalid number. Try again:",
-    "filters_invalid_range": f"{CR} Minimum can't be greater than maximum:",
-    "filters_invalid_negative": f"{CR} Value can't be negative:",
-    "filters_saved": f"{CH} Value saved",
-    "filters_applied": f"{CH} Filters applied!",
-    "filters_rarity_title": f"🏷 <b>Choose rarity</b>",
-    "filters_stability_title": f"{CU} <b>Choose stability</b>",
-    "filters_option_all": f"{CH} All",
-    "list_title": f"{LS} <b>Item catalog</b>",
-    "list_empty": f"😕 Nothing matches your filters.",
+    "filters_ask_min": "{pencil} Enter minimum price as a number:",
+    "filters_ask_max": "{pencil} Enter maximum price as a number, or -1 for unlimited:",
+    "filters_invalid_number": "{cross} Invalid number. Try again:",
+    "filters_invalid_range": "{cross} Minimum can't be greater than maximum:",
+    "filters_invalid_negative": "{cross} Value can't be negative:",
+    "filters_saved": "{check} Value saved",
+    "filters_applied": "{check} Filters applied!",
+    "filters_rarity_title": "🏷 <b>Choose rarity</b>",
+    "filters_stability_title": "{chart_up} <b>Choose stability</b>",
+    "filters_option_all": "{check} All",
+    "list_title": "{list} <b>Item catalog</b>",
+    "list_empty": "😕 Nothing matches your filters.",
     "list_nav_page": "📄 {page}/{total}",
-    "feedback_like": f"{LI} Thanks for your feedback!",
-    "feedback_dislike": f"{DI} What's wrong?",
+    "feedback_like": "{like} Thanks for your feedback!",
+    "feedback_dislike": "{dislike} What's wrong?",
     "feedback_reason_bad_result": "Wrong result",
     "feedback_reason_bad_translation": "Bad translation",
     "feedback_reason_bad_image": "Wrong image",
     "feedback_reason_other": "Other",
-    "feedback_ask_details": f"{PE} Describe the problem or suggest correct translation/name (or /cancel):",
-    "feedback_sent": f"{CH} Thank you! Administrator will receive your feedback.",
-    "feedback_cancelled": f"{CR} Feedback cancelled.",
+    "feedback_ask_details": "{pencil} Describe the problem or suggest correct translation/name (or /cancel):",
+    "feedback_sent": "{check} Thank you! Administrator will receive your feedback.",
+    "feedback_cancelled": "{cross} Feedback cancelled.",
 })
 
-def t(lang: str, key: str, **kwargs) -> str:
-    lang = lang if lang in TEXTS else DEFAULT_LANG
-    template = TEXTS[lang].get(key, TEXTS[DEFAULT_LANG].get(key, key))
-    return template.format(**kwargs) if kwargs else template
+
+# Функция-обёртка для t с автоматическими эмодзи
+def t_em(lang: str, key: str, **kwargs) -> str:
+    """Форматирует шаблон, подставляя эмодзи и переданные параметры."""
+    return t(lang, key, **emoji_dict(), **kwargs)
+
 
 # --------------------------------------------------------------------------- #
 # Шрифты и картинки
@@ -1259,6 +1406,7 @@ _FALLBACK_FONT_MAP = {
 
 _font_cache: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
 
+
 def ensure_fonts_downloaded() -> None:
     for filename, url in _INTER_SOURCES.items():
         dest = os.path.join(FONTS_DIR, filename)
@@ -1271,6 +1419,7 @@ def ensure_fonts_downloaded() -> None:
                     f.write(resp.content)
         except Exception as e:
             logger.warning("Ошибка загрузки шрифта %s: %s", filename, e)
+
 
 def get_font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
     weight_file = "Inter-Bold.ttf" if weight in ("bold", "semibold", "extrabold") else "Inter-Regular.ttf"
@@ -1286,11 +1435,13 @@ def get_font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
     _font_cache[cache_key] = font
     return font
 
+
 _IMG_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36",
     "Referer": "https://supremevalues.com/",
 }
 _url_status_cache: dict[str, bool] = {}
+
 
 def _try_download_single(url: str) -> Optional[Image.Image]:
     if not url or _url_status_cache.get(url) is False:
@@ -1307,6 +1458,7 @@ def _try_download_single(url: str) -> Optional[Image.Image]:
     except Exception:
         _url_status_cache[url] = False
         return None
+
 
 def refresh_item_image_candidates(item: Item) -> list[str]:
     slug = item.category_slug
@@ -1348,6 +1500,7 @@ def refresh_item_image_candidates(item: Item) -> list[str]:
         logger.exception("Не удалось обновить URL изображения для %s", item.name)
     return fresh_candidates
 
+
 def _candidate_matches_item(url: str, item_name: str) -> bool:
     name_clean = _strip_name_tags(item_name).lower()
     name_words = set(re.findall(r"[a-z0-9]+", name_clean)) - _IMG_STOPWORDS
@@ -1355,6 +1508,7 @@ def _candidate_matches_item(url: str, item_name: str) -> bool:
         return True
     url_lower = url.lower()
     return all(word in url_lower for word in name_words)
+
 
 def download_item_image(item: Item) -> Optional[Image.Image]:
     candidates = [url for url in item.image_url_candidates if _candidate_matches_item(url, item.name)]
@@ -1380,22 +1534,25 @@ def download_item_image(item: Item) -> Optional[Image.Image]:
             return img
     return None
 
+
 CARD_W, CARD_H = 800, 800
 RARITY_GRADIENTS = {
-    "godlies": ((255,196,64),(120,40,140)), "chromas": ((255,90,205),(70,60,255)),
-    "legendaries": ((255,140,60),(140,30,30)), "ancients": ((170,100,255),(40,20,90)),
-    "vintages": ((190,150,110),(60,40,30)), "rares": ((80,150,255),(20,40,110)),
-    "uncommons": ((80,220,140),(10,60,50)), "commons": ((190,200,210),(60,60,70)),
+    "godlies": ((255, 196, 64), (120, 40, 140)), "chromas": ((255, 90, 205), (70, 60, 255)),
+    "legendaries": ((255, 140, 60), (140, 30, 30)), "ancients": ((170, 100, 255), (40, 20, 90)),
+    "vintages": ((190, 150, 110), (60, 40, 30)), "rares": ((80, 150, 255), (20, 40, 110)),
+    "uncommons": ((80, 220, 140), (10, 60, 50)), "commons": ((190, 200, 210), (60, 60, 70)),
 }
-DEFAULT_GRADIENT = ((90,90,140),(20,20,40))
+DEFAULT_GRADIENT = ((90, 90, 140), (20, 20, 40))
 RARITY_ACCENT = {
-    "godlies": (255,210,90), "chromas": (255,110,220), "legendaries": (255,150,70),
-    "ancients": (190,130,255), "vintages": (205,170,130), "rares": (110,170,255),
-    "uncommons": (100,230,160), "commons": (210,215,225),
+    "godlies": (255, 210, 90), "chromas": (255, 110, 220), "legendaries": (255, 150, 70),
+    "ancients": (190, 130, 255), "vintages": (205, 170, 130), "rares": (110, 170, 255),
+    "uncommons": (100, 230, 160), "commons": (210, 215, 225),
 }
 
+
 def _lerp_color(c1, c2, t_):
-    return (int(c1[0]+(c2[0]-c1[0])*t_), int(c1[1]+(c2[1]-c1[1])*t_), int(c1[2]+(c2[2]-c1[2])*t_))
+    return (int(c1[0] + (c2[0] - c1[0]) * t_), int(c1[1] + (c2[1] - c1[1]) * t_), int(c1[2] + (c2[2] - c1[2]) * t_))
+
 
 def _make_mesh_background(width, height, slug):
     c1, c2 = RARITY_GRADIENTS.get(slug, DEFAULT_GRADIENT)
@@ -1403,19 +1560,20 @@ def _make_mesh_background(width, height, slug):
     px = base.load()
     for y in range(height):
         for x in range(0, width, 2):
-            t_ = ((x*0.6 + y*0.4)) / (width*0.6 + height*0.4)
+            t_ = ((x * 0.6 + y * 0.4)) / (width * 0.6 + height * 0.4)
             col = _lerp_color(c1, c2, min(1.0, max(0.0, t_)))
             px[x, y] = col
-            if x+1 < width:
-                px[x+1, y] = col
+            if x + 1 < width:
+                px[x + 1, y] = col
     base = base.convert("RGBA")
-    blob_layer = Image.new("RGBA", (width, height), (0,0,0,0))
+    blob_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     bdraw = ImageDraw.Draw(blob_layer)
-    accent = RARITY_ACCENT.get(slug, (150,150,220))
-    bdraw.ellipse([width*0.5, -height*0.2, width*1.3, height*0.6], fill=(*accent, 120))
-    bdraw.ellipse([-width*0.3, height*0.5, width*0.5, height*1.3], fill=(*c2, 130))
+    accent = RARITY_ACCENT.get(slug, (150, 150, 220))
+    bdraw.ellipse([width * 0.5, -height * 0.2, width * 1.3, height * 0.6], fill=(*accent, 120))
+    bdraw.ellipse([-width * 0.3, height * 0.5, width * 0.5, height * 1.3], fill=(*c2, 130))
     blob_layer = blob_layer.filter(ImageFilter.GaussianBlur(130))
     return Image.alpha_composite(base, blob_layer).convert("RGBA")
+
 
 def create_item_image(item: Item, lang: str) -> io.BytesIO:
     width, height = CARD_W, CARD_H
@@ -1426,32 +1584,34 @@ def create_item_image(item: Item, lang: str) -> io.BytesIO:
     panel_center_y = height // 2
     if item_img:
         margin = 40
-        max_w = width - margin*2
-        max_h = height - margin*2
+        max_w = width - margin * 2
+        max_h = height - margin * 2
         ratio = min(max_w / item_img.width, max_h / item_img.height, 1.0)
         if ratio < 1.0 or (item_img.width < max_w and item_img.height < max_h):
             ratio = min(max_w / item_img.width, max_h / item_img.height)
         new_w = max(1, int(item_img.width * ratio))
         new_h = max(1, int(item_img.height * ratio))
         item_img = item_img.resize((new_w, new_h), Image.LANCZOS)
-        shadow = Image.new("RGBA", (new_w+80, new_h+80), (0,0,0,0))
+        shadow = Image.new("RGBA", (new_w + 80, new_h + 80), (0, 0, 0, 0))
         sdraw = ImageDraw.Draw(shadow)
-        sdraw.ellipse([20, new_h-10, new_w+60, new_h+70], fill=(0,0,0,100))
+        sdraw.ellipse([20, new_h - 10, new_w + 60, new_h + 70], fill=(0, 0, 0, 100))
         shadow = shadow.filter(ImageFilter.GaussianBlur(25))
-        canvas.paste(shadow, (panel_center_x - (new_w+80)//2, panel_center_y - new_h//2 - 10), shadow)
-        canvas.paste(item_img, (panel_center_x - new_w//2, panel_center_y - new_h//2), item_img)
+        canvas.paste(shadow, (panel_center_x - (new_w + 80) // 2, panel_center_y - new_h // 2 - 10), shadow)
+        canvas.paste(item_img, (panel_center_x - new_w // 2, panel_center_y - new_h // 2), item_img)
     else:
         draw = ImageDraw.Draw(canvas)
-        draw.text((panel_center_x, panel_center_y-20), "🖼", anchor="mm", font=get_font(110), fill=(255,255,255,140))
-        draw.text((panel_center_x, panel_center_y+80), "Нет фото" if lang=="ru" else "No image", anchor="mm", font=get_font(28), fill=(255,255,255,160))
+        draw.text((panel_center_x, panel_center_y - 20), "🖼", anchor="mm", font=get_font(110), fill=(255, 255, 255, 140))
+        draw.text((panel_center_x, panel_center_y + 80), "Нет фото" if lang == "ru" else "No image", anchor="mm",
+                  font=get_font(28), fill=(255, 255, 255, 160))
     bio = io.BytesIO()
     canvas.convert("RGB").save(bio, format="JPEG", quality=95)
     bio.seek(0)
     return bio
 
+
 def format_item_caption(item: Item, lang: str) -> str:
     plate = rarity_plate_html(item.category_slug)
-    stab_txt = localized_stability(lang, item.stability) if item.stability else t(lang, "unknown_stability")
+    stab_txt = localized_stability(lang, item.stability) if item.stability else t_em(lang, "unknown_stability")
     name_en = item.name or "???"
     name_ru = get_ru_name(item.name) if lang == "ru" else ""
     if name_ru and normalize_text(name_ru) != normalize_text(name_en):
@@ -1459,101 +1619,145 @@ def format_item_caption(item: Item, lang: str) -> str:
     else:
         title = f"<b>{html.escape(name_en)}</b>"
     lines = [
-        f"{ST} {title}",
-        DIV,
-        f"{VA} <b>{t(lang, 'value_label')}:</b> ⛁ <b>{item.value_display or 'N/A'}</b>",
-        f"{NA} <b>{t(lang, 'status_label')}:</b> {plate}",
-        f"{CU} <b>{t(lang, 'stability_label')}:</b> {stab_txt}",
+        f"{emoji('star')} {title}",
+        divider(),
+        f"{emoji('value')} <b>{t_em(lang, 'value_label')}:</b> ⛁ <b>{item.value_display or 'N/A'}</b>",
+        f"{emoji('name_tag')} <b>{t_em(lang, 'status_label')}:</b> {plate}",
+        f"{emoji('chart_up')} <b>{t_em(lang, 'stability_label')}:</b> {stab_txt}",
     ]
     if item.origin:
-        lines.append(f"{GI} <b>{t(lang, 'origin_label')}:</b> {html.escape(item.origin)}")
+        lines.append(f"{emoji('gift')} <b>{t_em(lang, 'origin_label')}:</b> {html.escape(item.origin)}")
     return "\n".join(lines)
 
-def feedback_keyboard(lang: str, item_name: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(LI, callback_data=f"fb:like:{item_name}"),
-            InlineKeyboardButton(DI, callback_data=f"fb:dislike:{item_name}"),
-        ]
-    ])
-
-def dislike_reason_keyboard(lang: str, item_name: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(t(lang, "feedback_reason_bad_result"), callback_data=f"fb_reason:bad_result:{item_name}")],
-        [InlineKeyboardButton(t(lang, "feedback_reason_bad_translation"), callback_data=f"fb_reason:bad_translation:{item_name}")],
-        [InlineKeyboardButton(t(lang, "feedback_reason_bad_image"), callback_data=f"fb_reason:bad_image:{item_name}")],
-        [InlineKeyboardButton(t(lang, "feedback_reason_other"), callback_data=f"fb_reason:other:{item_name}")],
-    ])
 
 # --------------------------------------------------------------------------- #
-# UI
+# Кнопки с цветами и иконками
+# --------------------------------------------------------------------------- #
+
+def make_button(text: str, callback_data: str, icon_name: str = None, style: str = None) -> InlineKeyboardButton:
+    """
+    Создаёт кнопку. Если use_premium и задан icon_name, добавляет icon_custom_emoji_id
+    и убирает эмодзи из текста (текст должен быть без эмодзи).
+    style может быть 'primary', 'success', 'danger'.
+    """
+    if use_premium() and icon_name:
+        # Убираем иконку из текста, если она там есть (на всякий случай)
+        # Предполагаем, что текст уже без эмодзи, только описание
+        icon_id_str = icon_id(icon_name)
+        if icon_id_str:
+            return InlineKeyboardButton(text=text, callback_data=callback_data,
+                                        icon_custom_emoji_id=icon_id_str, style=style)
+    # Без иконки или при выключенных премиум
+    return InlineKeyboardButton(text=text, callback_data=callback_data, style=style)
+
+
+def make_button_with_emoji(text: str, callback_data: str, icon_name: str = None, style: str = None) -> InlineKeyboardButton:
+    """
+    Если премиум включены, кнопка с иконкой, текст без эмодзи.
+    Если выключены, в текст добавляется обычный эмодзи.
+    """
+    if use_premium() and icon_name:
+        return InlineKeyboardButton(text=text, callback_data=callback_data,
+                                    icon_custom_emoji_id=icon_id(icon_name), style=style)
+    else:
+        # Добавляем fallback-эмодзи перед текстом
+        fb = FALLBACK_EMOJI.get(icon_name, "")
+        return InlineKeyboardButton(text=f"{fb} {text}".strip(), callback_data=callback_data, style=style)
+
+
+# --------------------------------------------------------------------------- #
+# UI компоненты с учётом флага премиум
 # --------------------------------------------------------------------------- #
 
 LIST_PAGE_SIZE = 8
+
 
 def _filters_summary_value(lang: str, filters: ItemFilters, kind: str) -> str:
     if kind == "min":
         return str(filters.min_value) if filters.min_value else "0"
     if kind == "max":
-        return t(lang, "filters_unlimited") if filters.max_value == -1 else str(filters.max_value)
+        return t_em(lang, "filters_unlimited") if filters.max_value == -1 else str(filters.max_value)
     if kind == "rarity":
         if filters.rarity_slug == "all":
-            return t(lang, "filters_all")
+            return t_em(lang, "filters_all")
         return rarity_label_localized(lang, filters.rarity_slug)
     if kind == "stability":
         if filters.stability_key == "all":
-            return t(lang, "filters_all")
+            return t_em(lang, "filters_all")
         return stability_label(lang, filters.stability_key)
     return ""
 
+
 def build_filters_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(t(lang, "filters_btn_min", value=_filters_summary_value(lang, filters, "min")), callback_data="filt:ask_min")],
-        [InlineKeyboardButton(t(lang, "filters_btn_max", value=_filters_summary_value(lang, filters, "max")), callback_data="filt:ask_max")],
-        [InlineKeyboardButton(t(lang, "filters_btn_rarity", value=_filters_summary_value(lang, filters, "rarity")), callback_data="filt:rarity_menu")],
-        [InlineKeyboardButton(t(lang, "filters_btn_stability", value=_filters_summary_value(lang, filters, "stability")), callback_data="filt:stability_menu")],
+        [make_button_with_emoji(
+            t_em(lang, "filters_btn_min", val=_filters_summary_value(lang, filters, "min")),
+            "filt:ask_min", icon_name="value")],
+        [make_button_with_emoji(
+            t_em(lang, "filters_btn_max", val=_filters_summary_value(lang, filters, "max")),
+            "filt:ask_max", icon_name="value")],  # иконка доллара
+        [make_button_with_emoji(
+            t_em(lang, "filters_btn_rarity", val=_filters_summary_value(lang, filters, "rarity")),
+            "filt:rarity_menu")],
+        [make_button_with_emoji(
+            t_em(lang, "filters_btn_stability", val=_filters_summary_value(lang, filters, "stability")),
+            "filt:stability_menu", icon_name="chart_up")],
         [
-            InlineKeyboardButton(t(lang, "filters_btn_reset"), callback_data="filt:reset"),
-            InlineKeyboardButton(t(lang, "filters_btn_apply"), callback_data="filt:apply"),
+            make_button(t_em(lang, "filters_btn_reset"), "filt:reset", style="danger"),
+            make_button(t_em(lang, "filters_btn_apply"), "filt:apply", style="success"),
         ],
     ]
     return InlineKeyboardMarkup(rows)
 
+
 def build_rarity_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(("✅ " if filters.rarity_slug == "all" else "") + t(lang, "filters_option_all"), callback_data="filt:set_rarity:all")]]
-    for slug, _label, emoji in CATEGORIES:
+    rows = [[make_button(
+        ("✅ " if filters.rarity_slug == "all" else "") + t_em(lang, "filters_option_all"),
+        "filt:set_rarity:all")]]
+    for slug, _label, emoji_char in CATEGORIES:
         mark = "✅ " if filters.rarity_slug == slug else ""
-        rows.append([InlineKeyboardButton(f"{mark}{emoji} {rarity_label_localized(lang, slug)}", callback_data=f"filt:set_rarity:{slug}")])
-    rows.append([InlineKeyboardButton(LE, callback_data="filt:back")])
+        # Используем обычный эмодзи редкости, т.к. в меню нет смысла в премиум иконках
+        rows.append([InlineKeyboardButton(f"{mark}{emoji_char} {rarity_label_localized(lang, slug)}",
+                                          callback_data=f"filt:set_rarity:{slug}")])
+    rows.append([make_button_with_emoji("Назад", "filt:back", icon_name="left", style="primary")])
     return InlineKeyboardMarkup(rows)
 
+
 def build_stability_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(("✅ " if filters.stability_key == "all" else "") + t(lang, "filters_option_all"), callback_data="filt:set_stability:all")]]
-    for key, ru_label, emoji in STABILITY_FILTER_OPTIONS:
+    rows = [[make_button(
+        ("✅ " if filters.stability_key == "all" else "") + t_em(lang, "filters_option_all"),
+        "filt:set_stability:all")]]
+    for key, ru_label, emoji_char in STABILITY_FILTER_OPTIONS:
         label = ru_label if lang == "ru" else key.title()
         mark = "✅ " if filters.stability_key == key else ""
-        rows.append([InlineKeyboardButton(f"{mark}{emoji} {label}", callback_data=f"filt:set_stability:{key}")])
-    rows.append([InlineKeyboardButton(LE, callback_data="filt:back")])
+        rows.append([InlineKeyboardButton(f"{mark}{emoji_char} {label}",
+                                          callback_data=f"filt:set_stability:{key}")])
+    rows.append([make_button_with_emoji("Назад", "filt:back", icon_name="left", style="primary")])
     return InlineKeyboardMarkup(rows)
+
 
 def build_list_keyboard(lang: str, page: int, total_pages: int) -> InlineKeyboardMarkup:
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(LE, callback_data=f"list:page:{page-1}"))
-    nav.append(InlineKeyboardButton(t(lang, "list_nav_page", page=page+1, total=max(total_pages,1)), callback_data="list:noop"))
+        nav.append(make_button_with_emoji("", f"list:page:{page - 1}", icon_name="left", style="primary"))
+    nav.append(InlineKeyboardButton(
+        t_em(lang, "list_nav_page", page=page + 1, total=max(total_pages, 1)),
+        callback_data="list:noop"))
     if page < total_pages - 1:
-        nav.append(InlineKeyboardButton(RI, callback_data=f"list:page:{page+1}"))
+        nav.append(make_button_with_emoji("", f"list:page:{page + 1}", icon_name="right", style="primary"))
     return InlineKeyboardMarkup([nav])
+
 
 def render_list_page_text(lang: str, items: list[Item], page: int, total_pages: int) -> str:
     start = page * LIST_PAGE_SIZE
-    page_items = items[start:start+LIST_PAGE_SIZE]
-    lines = [t(lang, "list_title"), ""]
-    for i, item in enumerate(page_items, start=start+1):
+    page_items = items[start:start + LIST_PAGE_SIZE]
+    lines = [t_em(lang, "list_title"), ""]
+    for i, item in enumerate(page_items, start=start + 1):
         plate = rarity_plate_html(item.category_slug)
         value = item.value_display or "N/A"
         lines.append(f"{i}. {plate} <b>{html.escape(item.name)}</b> — ⛁ {value}")
     return "\n".join(lines)
+
 
 async def send_item_card(update: Update, context: ContextTypes.DEFAULT_TYPE, item: Item, lang: str) -> None:
     chat_id = update.effective_chat.id
@@ -1571,78 +1775,129 @@ async def send_item_card(update: Update, context: ContextTypes.DEFAULT_TYPE, ite
             reply_markup=feedback_keyboard(lang, item.name),
         )
 
+
+def feedback_keyboard(lang: str, item_name: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            make_button_with_emoji("", f"fb:like:{item_name}", icon_name="like", style="primary"),
+            make_button_with_emoji("", f"fb:dislike:{item_name}", icon_name="dislike", style="danger"),
+        ]
+    ])
+
+
+def dislike_reason_keyboard(lang: str, item_name: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(t_em(lang, "feedback_reason_bad_result"),
+                              callback_data=f"fb_reason:bad_result:{item_name}")],
+        [InlineKeyboardButton(t_em(lang, "feedback_reason_bad_translation"),
+                              callback_data=f"fb_reason:bad_translation:{item_name}")],
+        [InlineKeyboardButton(t_em(lang, "feedback_reason_bad_image"),
+                              callback_data=f"fb_reason:bad_image:{item_name}")],
+        [InlineKeyboardButton(t_em(lang, "feedback_reason_other"),
+                              callback_data=f"fb_reason:other:{item_name}")],
+    ])
+
+
 # --------------------------------------------------------------------------- #
 # Команды
 # --------------------------------------------------------------------------- #
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = state_store.get_user_lang(update.effective_user.id)
-    await update.message.reply_text(t(lang, "start"), parse_mode=ParseMode.HTML)
+    await update.message.reply_text(t_em(lang, "start"), parse_mode=ParseMode.HTML)
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = state_store.get_user_lang(update.effective_user.id)
-    await update.message.reply_text(t(lang, "help"), parse_mode=ParseMode.HTML)
+    await update.message.reply_text(t_em(lang, "help"), parse_mode=ParseMode.HTML)
+
 
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = state_store.get_user_lang(update.effective_user.id)
     rows = [[InlineKeyboardButton(name, callback_data=f"setlang:{code}")] for code, name in SUPPORTED_LANGS.items()]
-    await update.message.reply_text(t(lang, "settings_title"), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows))
+    await update.message.reply_text(t_em(lang, "settings_title"), parse_mode=ParseMode.HTML,
+                                    reply_markup=InlineKeyboardMarkup(rows))
+
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = state_store.get_user_lang(update.effective_user.id)
     count = cache.size
-    last_update = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cache.last_updated)) if cache.last_updated else t(lang, "never")
-    text = t(lang, "status_report", count=count, last_update=last_update, error=cache.last_error) if cache.last_error else t(lang, "status_report_ok", count=count, last_update=last_update)
+    last_update = time.strftime("%Y-%m-%d %H:%M:%S",
+                                time.localtime(cache.last_updated)) if cache.last_updated else t_em(lang, "never")
+    em = emoji_dict()
+    if cache.last_error:
+        text = t_em(lang, "status_report", count=count, last_update=last_update, error=cache.last_error)
+    else:
+        text = t_em(lang, "status_report_ok", count=count, last_update=last_update)
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
 
 async def setrefresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = state_store.get_user_lang(update.effective_user.id)
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text(t(lang, "admin_only"))
+        await update.message.reply_text(t_em(lang, "admin_only"))
         return
     args = context.args
     if not args:
         days = state_store.get_refresh_interval_days()
-        await update.message.reply_text(t(lang, "admin_set_refresh", days=days))
+        await update.message.reply_text(t_em(lang, "admin_set_refresh", days=days))
         return
     try:
         days = int(args[0])
         if not (1 <= days <= 90):
             raise ValueError
     except ValueError:
-        await update.message.reply_text(t(lang, "admin_refresh_invalid"))
+        await update.message.reply_text(t_em(lang, "admin_refresh_invalid"))
         return
     state_store.set_refresh_interval_days(days)
     scheduler = context.application.bot_data.get("scheduler")
     if scheduler:
         try:
-            scheduler.reschedule_job("cache_refresh", trigger="interval", seconds=days*86400)
+            scheduler.reschedule_job("cache_refresh", trigger="interval", seconds=days * 86400)
         except Exception:
             logger.exception("Не удалось перепланировать задачу обновления кэша")
-    await update.message.reply_text(t(lang, "admin_refresh_updated", days=days))
+    await update.message.reply_text(t_em(lang, "admin_refresh_updated", days=days))
+
+
+async def togglepremium_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Админская команда для переключения премиум-эмодзи."""
+    lang = state_store.get_user_lang(update.effective_user.id)
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text(t_em(lang, "admin_only"))
+        return
+    current = state_store.get_use_premium_emoji()
+    new_val = not current
+    state_store.set_use_premium_emoji(new_val)
+    status = "включены" if new_val else "выключены"
+    await update.message.reply_text(f"Премиум-эмодзи {status}.")
+
 
 async def filters_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     lang = state_store.get_user_lang(user_id)
     context.user_data.pop("awaiting_filter_input", None)
     filters_obj = state_store.get_user_filters(user_id)
-    await update.message.reply_text(t(lang, "filters_title"), parse_mode=ParseMode.HTML, reply_markup=build_filters_keyboard(lang, filters_obj))
+    await update.message.reply_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                                    reply_markup=build_filters_keyboard(lang, filters_obj))
+
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     lang = state_store.get_user_lang(user_id)
     if cache.size == 0:
-        await update.message.reply_text(t(lang, "cache_empty"))
+        await update.message.reply_text(t_em(lang, "cache_empty"))
         return
     filters_obj = state_store.get_user_filters(user_id)
     items = cache.all_items(filters_obj)
     if not items:
-        await update.message.reply_text(t(lang, "list_empty"), parse_mode=ParseMode.HTML)
+        await update.message.reply_text(t_em(lang, "list_empty"), parse_mode=ParseMode.HTML)
         return
     total_pages = max(1, math.ceil(len(items) / LIST_PAGE_SIZE))
     page = 0
     text = render_list_page_text(lang, items, page, total_pages)
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=build_list_keyboard(lang, page, total_pages))
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML,
+                                    reply_markup=build_list_keyboard(lang, page, total_pages))
+
 
 async def search_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -1669,7 +1924,7 @@ async def search_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             logger.error("Не удалось отправить фидбэк админу: %s", e)
         context.user_data.pop("awaiting_feedback", None)
         context.user_data.pop("feedback_reason", None)
-        await update.message.reply_text(t(lang, "feedback_sent"))
+        await update.message.reply_text(t_em(lang, "feedback_sent"))
         return
 
     awaiting = context.user_data.get("awaiting_filter_input")
@@ -1677,63 +1932,67 @@ async def search_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         try:
             value = int(query.strip())
         except ValueError:
-            await update.message.reply_text(t(lang, "filters_invalid_number"))
+            await update.message.reply_text(t_em(lang, "filters_invalid_number"))
             return
         filters_obj = state_store.get_user_filters(user_id)
         if awaiting == "min":
             if value < 0:
-                await update.message.reply_text(t(lang, "filters_invalid_negative"))
+                await update.message.reply_text(t_em(lang, "filters_invalid_negative"))
                 return
             if filters_obj.max_value != -1 and value > filters_obj.max_value:
-                await update.message.reply_text(t(lang, "filters_invalid_range"))
+                await update.message.reply_text(t_em(lang, "filters_invalid_range"))
                 return
             filters_obj.min_value = value
         else:
             if value != -1 and value < 0:
-                await update.message.reply_text(t(lang, "filters_invalid_negative"))
+                await update.message.reply_text(t_em(lang, "filters_invalid_negative"))
                 return
             if value != -1 and value < filters_obj.min_value:
-                await update.message.reply_text(t(lang, "filters_invalid_range"))
+                await update.message.reply_text(t_em(lang, "filters_invalid_range"))
                 return
             filters_obj.max_value = value
         state_store.set_user_filters(user_id, filters_obj)
         context.user_data.pop("awaiting_filter_input", None)
-        await update.message.reply_text(t(lang, "filters_title"), parse_mode=ParseMode.HTML, reply_markup=build_filters_keyboard(lang, filters_obj))
+        await update.message.reply_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                                        reply_markup=build_filters_keyboard(lang, filters_obj))
         return
 
     if cache.size == 0:
-        await update.message.reply_text(t(lang, "cache_empty"))
+        await update.message.reply_text(t_em(lang, "cache_empty"))
         return
 
     filters_obj = state_store.get_user_filters(user_id)
     results = cache.search(query, limit=5, filters=filters_obj)
     if not results:
-        await update.message.reply_text(t(lang, "not_found", query=html.escape(query)), parse_mode=ParseMode.HTML)
+        await update.message.reply_text(t_em(lang, "not_found", query=html.escape(query)), parse_mode=ParseMode.HTML)
         return
 
     best_item, _score = results[0]
     await send_item_card(update, context, best_item, lang)
 
+
 async def force_refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     lang = state_store.get_user_lang(user_id)
     if user_id != ADMIN_ID:
-        await update.message.reply_text(t(lang, "admin_only"))
+        await update.message.reply_text(t_em(lang, "admin_only"))
         return
-    await update.message.reply_text(f"{REF} Запускаю принудительное обновление кэша...")
+    await update.message.reply_text(f"{emoji('refresh')} Запускаю принудительное обновление кэша...")
     threading.Thread(target=cache.refresh, daemon=True).start()
+
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if context.user_data.get("awaiting_feedback"):
         context.user_data.pop("awaiting_feedback", None)
         context.user_data.pop("feedback_reason", None)
         lang = state_store.get_user_lang(update.effective_user.id)
-        await update.message.reply_text(t(lang, "feedback_cancelled"))
+        await update.message.reply_text(t_em(lang, "feedback_cancelled"))
     else:
         await update.message.reply_text("Нечего отменять.")
 
+
 # --------------------------------------------------------------------------- #
-# Callback Query
+# Callback Query (исправлен фидбэк)
 # --------------------------------------------------------------------------- #
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1744,7 +2003,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     try:
         if data.startswith("fb:like:"):
-            await query.answer(t(lang, "feedback_like"))
+            await query.answer(t_em(lang, "feedback_like"))
             return
 
         if data.startswith("fb:dislike:"):
@@ -1755,7 +2014,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             except BadRequest:
                 await context.bot.send_message(
                     chat_id=update.effective_chat.id,
-                    text=t(lang, "feedback_dislike"),
+                    text=t_em(lang, "feedback_dislike"),
                     reply_markup=dislike_reason_keyboard(lang, item_name),
                 )
             return
@@ -1769,7 +2028,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.answer()
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
-                text=t(lang, "feedback_ask_details"),
+                text=t_em(lang, "feedback_ask_details"),
                 parse_mode=ParseMode.HTML,
             )
             try:
@@ -1784,7 +2043,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 state_store.set_user_lang(user_id, new_lang)
                 lang = new_lang
                 await query.answer()
-                await query.edit_message_text(t(lang, "settings_saved", lang_name=SUPPORTED_LANGS[new_lang]), parse_mode=ParseMode.HTML)
+                await query.edit_message_text(t_em(lang, "settings_saved", lang_name=SUPPORTED_LANGS[new_lang]),
+                                              parse_mode=ParseMode.HTML)
             else:
                 await query.answer()
             return
@@ -1796,50 +2056,56 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             if action == "ask_min":
                 context.user_data["awaiting_filter_input"] = "min"
                 await query.answer()
-                await query.edit_message_text(t(lang, "filters_ask_min"), parse_mode=ParseMode.HTML)
+                await query.edit_message_text(t_em(lang, "filters_ask_min"), parse_mode=ParseMode.HTML)
                 return
             if action == "ask_max":
                 context.user_data["awaiting_filter_input"] = "max"
                 await query.answer()
-                await query.edit_message_text(t(lang, "filters_ask_max"), parse_mode=ParseMode.HTML)
+                await query.edit_message_text(t_em(lang, "filters_ask_max"), parse_mode=ParseMode.HTML)
                 return
             if action == "rarity_menu":
                 await query.answer()
-                await query.edit_message_text(t(lang, "filters_rarity_title"), parse_mode=ParseMode.HTML, reply_markup=build_rarity_menu_keyboard(lang, filters_obj))
+                await query.edit_message_text(t_em(lang, "filters_rarity_title"), parse_mode=ParseMode.HTML,
+                                              reply_markup=build_rarity_menu_keyboard(lang, filters_obj))
                 return
             if action == "stability_menu":
                 await query.answer()
-                await query.edit_message_text(t(lang, "filters_stability_title"), parse_mode=ParseMode.HTML, reply_markup=build_stability_menu_keyboard(lang, filters_obj))
+                await query.edit_message_text(t_em(lang, "filters_stability_title"), parse_mode=ParseMode.HTML,
+                                              reply_markup=build_stability_menu_keyboard(lang, filters_obj))
                 return
             if action.startswith("set_rarity:"):
                 slug = action.split(":", 1)[1]
                 filters_obj.rarity_slug = slug
                 state_store.set_user_filters(user_id, filters_obj)
-                await query.answer(t(lang, "filters_saved"))
-                await query.edit_message_text(t(lang, "filters_title"), parse_mode=ParseMode.HTML, reply_markup=build_filters_keyboard(lang, filters_obj))
+                await query.answer(t_em(lang, "filters_saved"))
+                await query.edit_message_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                                              reply_markup=build_filters_keyboard(lang, filters_obj))
                 return
             if action.startswith("set_stability:"):
                 key = action.split(":", 1)[1]
                 filters_obj.stability_key = key
                 state_store.set_user_filters(user_id, filters_obj)
-                await query.answer(t(lang, "filters_saved"))
-                await query.edit_message_text(t(lang, "filters_title"), parse_mode=ParseMode.HTML, reply_markup=build_filters_keyboard(lang, filters_obj))
+                await query.answer(t_em(lang, "filters_saved"))
+                await query.edit_message_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                                              reply_markup=build_filters_keyboard(lang, filters_obj))
                 return
             if action == "reset":
                 state_store.reset_user_filters(user_id)
                 context.user_data.pop("awaiting_filter_input", None)
                 filters_obj = state_store.get_user_filters(user_id)
-                await query.answer(t(lang, "filters_saved"))
-                await query.edit_message_text(t(lang, "filters_title"), parse_mode=ParseMode.HTML, reply_markup=build_filters_keyboard(lang, filters_obj))
+                await query.answer(t_em(lang, "filters_saved"))
+                await query.edit_message_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                                              reply_markup=build_filters_keyboard(lang, filters_obj))
                 return
             if action == "apply":
                 context.user_data.pop("awaiting_filter_input", None)
-                await query.answer(t(lang, "filters_applied"))
-                await query.edit_message_text(t(lang, "filters_applied"), parse_mode=ParseMode.HTML)
+                await query.answer(t_em(lang, "filters_applied"))
+                await query.edit_message_text(t_em(lang, "filters_applied"), parse_mode=ParseMode.HTML)
                 return
             if action == "back":
                 await query.answer()
-                await query.edit_message_text(t(lang, "filters_title"), parse_mode=ParseMode.HTML, reply_markup=build_filters_keyboard(lang, filters_obj))
+                await query.edit_message_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                                              reply_markup=build_filters_keyboard(lang, filters_obj))
                 return
             await query.answer()
             return
@@ -1857,7 +2123,8 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 page = max(0, min(page, total_pages - 1))
                 text = render_list_page_text(lang, items, page, total_pages)
                 await query.answer()
-                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=build_list_keyboard(lang, page, total_pages))
+                await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                              reply_markup=build_list_keyboard(lang, page, total_pages))
                 return
             await query.answer()
             return
@@ -1876,6 +2143,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         except Exception:
             pass
 
+
 # --------------------------------------------------------------------------- #
 # Инициализация
 # --------------------------------------------------------------------------- #
@@ -1891,20 +2159,24 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     else:
         logger.error("Необработанное исключение при обработке апдейта", exc_info=error)
 
+
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
         self.wfile.write(b"OK")
+
     def log_message(self, format, *args):
         return
+
 
 def run_health_check_server():
     server_address = ("0.0.0.0", PORT)
     httpd = ThreadingHTTPServer(server_address, HealthCheckHandler)
     logger.info("Health check HTTP-сервер запущен на порту %d", PORT)
     httpd.serve_forever()
+
 
 def reset_webhook_and_cleanup():
     try:
@@ -1920,6 +2192,7 @@ def reset_webhook_and_cleanup():
             logger.warning("Не удалось очистить pending updates: %s", resp.text)
     except Exception as e:
         logger.error("Ошибка при очистке вебхука: %s", e)
+
 
 if __name__ == "__main__":
     ensure_fonts_downloaded()
@@ -1942,7 +2215,9 @@ if __name__ == "__main__":
     except Exception:
         pass
     if not loaded:
-        load_thread = threading.Thread(target=lambda: setattr(sys.modules[__name__], '_channel_loaded', state_store.load_from_channel()), daemon=True)
+        load_thread = threading.Thread(
+            target=lambda: setattr(sys.modules[__name__], '_channel_loaded', state_store.load_from_channel()),
+            daemon=True)
         _channel_loaded = False
         load_thread.start()
         load_thread.join(timeout=15)
@@ -1974,6 +2249,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("list", list_command))
     application.add_handler(CommandHandler("refresh12345", force_refresh_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
+    application.add_handler(CommandHandler("togglepremium", togglepremium_command))
 
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_text_message))
