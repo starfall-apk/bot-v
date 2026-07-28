@@ -26,7 +26,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -37,6 +37,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # --------------------------------------------------------------------------- #
@@ -56,15 +57,14 @@ PORT = int(os.environ.get("PORT", "10000"))
 
 BASE_URL = "https://supremevalues.com"
 
-# Исправленные цвета редкости (Godly - розовый, Ancient - фиолетовый)
 CATEGORIES: list[tuple[str, str, str]] = [
-    ("godlies", "Godly", "🌸"),        # розовый
+    ("godlies", "Godly", "🌸"),
     ("chromas", "Chroma", "🌈"),
-    ("legendaries", "Legendary", "🔴"), # красный
-    ("ancients", "Ancient", "🟣"),      # фиолетовый
-    ("vintages", "Vintage", "🟡"),      # жёлтый
-    ("rares", "Rare", "🟢"),            # зелёный
-    ("uncommons", "Uncommon", "🔵"),    # голубой
+    ("legendaries", "Legendary", "🔴"),
+    ("ancients", "Ancient", "🟣"),
+    ("vintages", "Vintage", "🟡"),
+    ("rares", "Rare", "🟢"),
+    ("uncommons", "Uncommon", "🔵"),
     ("commons", "Common", "⚪"),
 ]
 CATEGORY_SLUGS = [c[0] for c in CATEGORIES]
@@ -87,6 +87,7 @@ logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 try:
     from deep_translator import GoogleTranslator
+
     TRANSLATOR_AVAILABLE = True
 except ImportError:
     TRANSLATOR_AVAILABLE = False
@@ -97,49 +98,49 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 
 PREMIUM = {
-    "wave": 5262586680048625238,          # привет
-    "stats": 5231200819986047254,         # статус
-    "yes": 5316786684833053986,           # Да (вместо галочки)
-    "no": 5316669728578616927,            # Нет (вместо крестика)
-    "verify": 5354844694985590087,        # верификация (галочка в кружочке) - для "Все"?
-    "like": 5262501394883028496,          # лайк
-    "dislike": 5262904116786507271,       # дизлайк
-    "lang": 5447410659077661506,          # язык
-    "filters": 5305265301917549162,       # фильтры
-    "list": 5319295899216654757,          # список
-    "value": 5319065555825605163,         # ценность
-    "name_tag": 5316562783892945926,      # название
-    "chart_up": 5244837092042750681,      # график вверх
-    "chart_down": 5246762912428603768,    # график вниз
-    "gift": 5192879906295397710,          # подарок
-    "left": 5316757423220867321,          # влево
-    "right": 5316926258385271354,         # вправо
-    "star": 5316791559620934773,          # звездочка перед названием
-    "fire": 5355092132346482871,          # огонёк
-    "info": 5262831879731555779,          # инфо
-    "refresh": 5375338737028841420,       # обновление
-    "home": 5416041192905265756,          # дом
-    "div_dark": 5255779912798710813,      # тёмный разделитель
-    "div_light": 5256249601832268668,     # светлый разделитель
-    "candlestick": 5451882707875276247,   # свеча
-    "plus": 5397916757333654639,          # плюсик
-    "diamond": 5316798019251749107,       # бриллиант
-    "trash": 5263003781502608081,         # мусорка
-    "heart": 5316865463123197927,         # сердечко (бывшая закладка)
-    "rainbow": 5409109841538994759,       # радуга
-    "settings": 5341715473882955310,      # настройки
-    "loading": 5319095345718770462,       # загрузка
-    "bulb": 5422439311196834318,          # лампочка
-    "pencil": 5395444784611480792,        # карандашик
-    "red_flag": 5460755126761312667,      # красный флажок
-    "party": 5461151367559141950,         # хлопушка
-    "star2": 5354799331541011105,         # звезда (альтернативная)
-    "alarm": 5316960914476384229,         # сигнализация
-    "top": 5415655814079723871,           # топ
-    "new": 5382357040008021292,           # новый
-    "soon": 5440621591387980068,          # скоро
-    "free": 5406756500108501710,          # бесплатно
-    "lock": 5296369303661067030,          # замочек
+    "wave": 5262586680048625238,
+    "stats": 5231200819986047254,
+    "yes": 5316786684833053986,
+    "no": 5316669728578616927,
+    "verify": 5354844694985590087,
+    "like": 5262501394883028496,
+    "dislike": 5262904116786507271,
+    "lang": 5447410659077661506,
+    "filters": 5305265301917549162,
+    "list": 5319295899216654757,
+    "value": 5319065555825605163,
+    "name_tag": 5316562783892945926,
+    "chart_up": 5244837092042750681,
+    "chart_down": 5246762912428603768,
+    "gift": 5192879906295397710,
+    "left": 5316757423220867321,
+    "right": 5316926258385271354,
+    "star": 5316791559620934773,
+    "fire": 5355092132346482871,
+    "info": 5262831879731555779,
+    "refresh": 5375338737028841420,
+    "home": 5416041192905265756,
+    "div_dark": 5255779912798710813,
+    "div_light": 5256249601832268668,
+    "candlestick": 5451882707875276247,
+    "plus": 5397916757333654639,
+    "diamond": 5316798019251749107,
+    "trash": 5263003781502608081,
+    "heart": 5316865463123197927,
+    "rainbow": 5409109841538994759,
+    "settings": 5341715473882955310,
+    "loading": 5319095345718770462,
+    "bulb": 5422439311196834318,
+    "pencil": 5395444784611480792,
+    "red_flag": 5460755126761312667,
+    "party": 5461151367559141950,
+    "star2": 5354799331541011105,
+    "alarm": 5316960914476384229,
+    "top": 5415655814079723871,
+    "new": 5382357040008021292,
+    "soon": 5440621591387980068,
+    "free": 5406756500108501710,
+    "lock": 5296369303661067030,
 }
 
 FALLBACK_EMOJI = {
@@ -222,7 +223,6 @@ def icon_id(name: str) -> Optional[str]:
 
 def divider() -> str:
     if use_premium():
-        # Увеличена длина разделителя в ~1.8 раза (5 пар тёмный+светлый = 10 эмодзи)
         return (emoji("div_dark") + emoji("div_light")) * 5
     return "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
@@ -287,7 +287,7 @@ class Item:
 
 
 # --------------------------------------------------------------------------- #
-# Нормализация (с поддержкой римских цифр)
+# Нормализация
 # --------------------------------------------------------------------------- #
 
 CYR_TO_LAT = {
@@ -314,22 +314,26 @@ ROMAN_NUMERALS = {
     "xvi": 16, "xvii": 17, "xviii": 18, "xix": 19, "xx": 20,
 }
 
+
 def strip_accents(text: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
 
+
 def normalize_text(text: str) -> str:
     text = strip_accents(text.lower())
-    # Сохраняем римские цифры как есть, но удаляем остальные не-буквенно-цифровые
     text = re.sub(r"[^a-zа-я0-9]+", " ", text)
     return " ".join(text.split())
+
 
 def token_sorted_text(text: str) -> str:
     words = sorted(re.findall(r"[a-zа-я0-9]+", strip_accents(text.lower())))
     return " ".join(words)
 
+
 def transliterate_ru_to_lat(text: str) -> str:
     text = text.lower()
     return "".join(CYR_TO_LAT.get(ch, ch) for ch in text)
+
 
 def generate_query_variants(raw_query: str) -> list[str]:
     raw = raw_query.strip()
@@ -349,7 +353,6 @@ def generate_query_variants(raw_query: str) -> list[str]:
     v = normalize_text(translit)
     if v:
         variants.add(v)
-    # Если в запросе есть римская цифра, добавляем вариант с арабской
     words = base.split()
     for i, w in enumerate(words):
         if w in ROMAN_NUMERALS:
@@ -358,8 +361,9 @@ def generate_query_variants(raw_query: str) -> list[str]:
             variants.add(" ".join(new_words))
     return list(variants)
 
+
 # --------------------------------------------------------------------------- #
-# Перевод (словарь + авто-разбор + Google)
+# Перевод
 # --------------------------------------------------------------------------- #
 
 ROOT_TRANSLATIONS: dict[str, str] = {
@@ -549,7 +553,7 @@ def get_ru_name(name_en: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Парсинг (полная версия)
+# Парсинг
 # --------------------------------------------------------------------------- #
 
 STABILITY_MAP_RU = {
@@ -644,7 +648,6 @@ def guess_image_filenames(display_name: str) -> list[str]:
     add(first_word)
     safe_name = re.sub(r"[^\w\s-]", "", clean).strip().replace(" ", "_")
     add(safe_name)
-    # Добавляем вариант с числами (римские -> арабские)
     for i, w in enumerate(plain_words):
         if w.lower() in ROMAN_NUMERALS:
             new_words = plain_words.copy()
@@ -780,7 +783,7 @@ def fetch_all_items() -> list[Item]:
 
 
 # --------------------------------------------------------------------------- #
-# Поиск и Кэш (исправлен для пронумерованных предметов)
+# Поиск и Кэш
 # --------------------------------------------------------------------------- #
 
 @dataclass
@@ -810,7 +813,6 @@ class ValuesCache:
             if item_key_lower in ITEM_ALIASES:
                 for alias in ITEM_ALIASES[item_key_lower]:
                     keys_to_add.add(alias)
-            # Добавляем вариант с арабскими цифрами вместо римских
             words = item.name.split()
             for i, w in enumerate(words):
                 if w.lower() in ROMAN_NUMERALS:
@@ -947,7 +949,7 @@ class ValuesCache:
 cache = ValuesCache()
 
 # --------------------------------------------------------------------------- #
-# StateStore (без изменений)
+# StateStore с добавленной статистикой
 # --------------------------------------------------------------------------- #
 
 DEFAULT_LANG = "ru"
@@ -1013,6 +1015,11 @@ class StateStore:
         self.translations: dict[str, str] = {}
         self.refresh_interval_days: int = DEFAULT_REFRESH_DAYS
         self.use_premium_emoji: bool = True
+        # Статистика
+        self.total_users: set[str] = set()
+        self.monthly_active: dict[str, float] = {}  # user_id -> last active timestamp
+        self.feedback_likes: int = 0
+        self.feedback_dislikes: int = 0
         self._dirty_event = threading.Event()
         self._stop_event = threading.Event()
         self._debounce_thread: Optional[threading.Thread] = None
@@ -1020,7 +1027,7 @@ class StateStore:
     def _to_state_dict(self) -> dict:
         with self._lock:
             return {
-                "version": 3, "saved_at": time.time(),
+                "version": 4, "saved_at": time.time(),
                 "settings": {
                     "refresh_interval_days": self.refresh_interval_days,
                     "user_langs": dict(self.user_langs),
@@ -1029,6 +1036,12 @@ class StateStore:
                     "translations": dict(self.translations),
                     "use_premium_emoji": self.use_premium_emoji,
                 },
+                "stats": {
+                    "total_users": list(self.total_users),
+                    "monthly_active": dict(self.monthly_active),
+                    "feedback_likes": self.feedback_likes,
+                    "feedback_dislikes": self.feedback_dislikes,
+                },
                 "cache": {"last_updated": cache.last_updated or None, "last_error": cache.last_error,
                           "items": cache.export_items()},
             }
@@ -1036,6 +1049,7 @@ class StateStore:
     def _load_state_dict(self, data: dict) -> None:
         settings = data.get("settings", {}) or {}
         cache_info = data.get("cache", {}) or {}
+        stats = data.get("stats", {}) or {}
         with self._lock:
             self.refresh_interval_days = int(settings.get("refresh_interval_days", DEFAULT_REFRESH_DAYS))
             self.user_langs = {str(k): v for k, v in (settings.get("user_langs", {}) or {}).items()}
@@ -1043,12 +1057,47 @@ class StateStore:
             self.known_images = {str(k): str(v) for k, v in (settings.get("known_images", {}) or {}).items()}
             self.translations = {str(k): str(v) for k, v in (settings.get("translations", {}) or {}).items()}
             self.use_premium_emoji = bool(settings.get("use_premium_emoji", True))
+            self.total_users = set(stats.get("total_users", []))
+            self.monthly_active = {k: v for k, v in (stats.get("monthly_active", {}) or {}).items()}
+            self.feedback_likes = int(stats.get("feedback_likes", 0))
+            self.feedback_dislikes = int(stats.get("feedback_dislikes", 0))
         raw_items = cache_info.get("items")
         if raw_items:
             cache.load_items(raw_items)
         with cache._lock:
             cache.last_updated = cache_info.get("last_updated") or 0.0
             cache.last_error = cache_info.get("last_error")
+
+    def record_user_active(self, user_id: int):
+        now = time.time()
+        uid = str(user_id)
+        with self._lock:
+            self.total_users.add(uid)
+            self.monthly_active[uid] = now
+            # Очищаем старые записи (>30 дней)
+            self.monthly_active = {k: v for k, v in self.monthly_active.items() if now - v < 30 * 86400}
+        self.mark_dirty()
+
+    def add_feedback(self, positive: bool):
+        with self._lock:
+            if positive:
+                self.feedback_likes += 1
+            else:
+                self.feedback_dislikes += 1
+        self.mark_dirty()
+
+    def get_stats_text(self) -> str:
+        with self._lock:
+            total_users = len(self.total_users)
+            monthly_active = len(self.monthly_active)
+            likes = self.feedback_likes
+            dislikes = self.feedback_dislikes
+        accuracy = (likes / (likes + dislikes) * 100) if (likes + dislikes) > 0 else 100
+        return (
+            f"👥 Всего пользователей: {total_users}\n"
+            f"📅 Активных за месяц: {monthly_active}\n"
+            f"🎯 Точность поиска: {accuracy:.1f}% (👍{likes} / 👎{dislikes})"
+        )
 
     def load_from_channel(self) -> bool:
         api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
@@ -1222,7 +1271,7 @@ class StateStore:
 state_store = StateStore(channel_id=CHANNEL_ID)
 
 # --------------------------------------------------------------------------- #
-# Локализация (обновлены эмодзи yes/no, убраны эмодзи из текстов кнопок)
+# Локализация
 # --------------------------------------------------------------------------- #
 
 RARITY_RU_LABELS = {
@@ -1348,7 +1397,6 @@ TEXTS["ru"].update({
     "admin_refresh_invalid": "{no} Укажите целое число дней от 1 до 90.",
     "admin_only": "⛔ Эта команда доступна только администратору.",
     "filters_title": "{filters} <b>Фильтры поиска</b>\n\nНастрой параметры и нажми «Применить».",
-    # Тексты кнопок без эмодзи
     "filters_btn_min": "Валюта (от): {val}",
     "filters_btn_max": "Валюта (до): {val}",
     "filters_btn_rarity": "Редкость: {val}",
@@ -1366,7 +1414,7 @@ TEXTS["ru"].update({
     "filters_applied": "{yes} Фильтры применены!",
     "filters_rarity_title": "🏷 <b>Выберите редкость</b>",
     "filters_stability_title": "{chart_up} <b>Выберите стабильность</b>",
-    "filters_option_all": "Все",  # без эмодзи, иконка будет через icon_custom_emoji_id
+    "filters_option_all": "Все",
     "list_title": "{list} <b>Каталог предметов</b> (дорогие → дешёвые)",
     "list_empty": "😕 По заданным фильтрам ничего не найдено. Проверь /filters.",
     "list_nav_page": "📄 {page}/{total}",
@@ -1707,7 +1755,7 @@ def format_item_caption(item: Item, lang: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Клавиатуры aiogram с поддержкой icon_custom_emoji_id и style
+# Клавиатуры aiogram
 # --------------------------------------------------------------------------- #
 
 def make_button(text: str, callback_data: str, icon_name: str = None, style: str = None) -> InlineKeyboardButton:
@@ -1723,7 +1771,6 @@ def make_button(text: str, callback_data: str, icon_name: str = None, style: str
 
 def make_button_with_emoji(text: str, callback_data: str, icon_name: str = None, style: str = None) -> InlineKeyboardButton:
     if use_premium() and icon_name:
-        # Текст без эмодзи, иконка будет отдельно
         return make_button(text, callback_data, icon_name=icon_name, style=style)
     else:
         fb = FALLBACK_EMOJI.get(icon_name, "")
@@ -1797,7 +1844,7 @@ def build_rarity_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboar
     buttons = [
         [make_button_with_emoji(
             t_em(lang, "filters_option_all"),
-            "filt:set_rarity:all", icon_name="verify")]  # иконка верификации для "Все"
+            "filt:set_rarity:all", icon_name="verify")]
     ]
     for slug, _label, emoji_char in CATEGORIES:
         mark = "✅ " if filters.rarity_slug == slug else ""
@@ -1869,6 +1916,14 @@ async def send_item_card(chat_id: int, item: Item, lang: str, bot: Bot) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# FSM для рекламы
+# --------------------------------------------------------------------------- #
+
+class AdvertiseStates(StatesGroup):
+    wait_text = State()
+
+
+# --------------------------------------------------------------------------- #
 # Обработчики aiogram
 # --------------------------------------------------------------------------- #
 
@@ -1877,18 +1932,21 @@ dp = Dispatcher()
 
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
+    state_store.record_user_active(message.from_user.id)
     lang = state_store.get_user_lang(message.from_user.id)
     await message.answer(t_em(lang, "start"), parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("help"))
 async def help_cmd(message: Message):
+    state_store.record_user_active(message.from_user.id)
     lang = state_store.get_user_lang(message.from_user.id)
     await message.answer(t_em(lang, "help"), parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("settings"))
 async def settings_cmd(message: Message):
+    state_store.record_user_active(message.from_user.id)
     lang = state_store.get_user_lang(message.from_user.id)
     builder = InlineKeyboardBuilder()
     for code, name in SUPPORTED_LANGS.items():
@@ -1899,6 +1957,7 @@ async def settings_cmd(message: Message):
 
 @dp.message(Command("status"))
 async def status_cmd(message: Message):
+    state_store.record_user_active(message.from_user.id)
     lang = state_store.get_user_lang(message.from_user.id)
     count = cache.size
     last_update = time.strftime("%Y-%m-%d %H:%M:%S",
@@ -1907,6 +1966,9 @@ async def status_cmd(message: Message):
         text = t_em(lang, "status_report", count=count, last_update=last_update, error=cache.last_error)
     else:
         text = t_em(lang, "status_report_ok", count=count, last_update=last_update)
+    # Добавляем статистику для админа
+    if message.from_user.id == ADMIN_ID:
+        text += "\n\n" + state_store.get_stats_text()
     await message.answer(text, parse_mode=ParseMode.HTML)
 
 
@@ -1953,6 +2015,7 @@ async def togglepremium_cmd(message: Message):
 
 @dp.message(Command("filters"))
 async def filters_cmd(message: Message, state: FSMContext):
+    state_store.record_user_active(message.from_user.id)
     user_id = message.from_user.id
     lang = state_store.get_user_lang(user_id)
     filters_obj = state_store.get_user_filters(user_id)
@@ -1963,6 +2026,7 @@ async def filters_cmd(message: Message, state: FSMContext):
 
 @dp.message(Command("list"))
 async def list_cmd(message: Message):
+    state_store.record_user_active(message.from_user.id)
     user_id = message.from_user.id
     lang = state_store.get_user_lang(user_id)
     if cache.size == 0:
@@ -2007,21 +2071,18 @@ async def advertise_cmd(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         await message.answer("Нет доступа")
         return
-    # Ожидаем сообщение с текстом и эмодзи
-    await state.set_state("advertise:wait_text")
+    await state.set_state(AdvertiseStates.wait_text)
     await message.answer("Отправьте текст с эмодзи, который нужно преобразовать и опубликовать.")
 
 
-@dp.message(F.text, state="advertise:wait_text")
+@dp.message(F.text, StateFilter(AdvertiseStates.wait_text))
 async def process_advertise(message: Message, state: FSMContext):
     text = message.text or message.caption or ""
     entities = message.entities or message.caption_entities or []
-    # Заменяем кастомные эмодзи на HTML теги
     custom_emojis = sorted(
         [e for e in entities if e.type == "custom_emoji"],
         key=lambda e: e.offset, reverse=True
     )
-    # Переводим в UTF-16-LE для корректных смещений
     encoded = text.encode("utf-16-le")
     for e in custom_emojis:
         start = e.offset * 2
@@ -2029,7 +2090,6 @@ async def process_advertise(message: Message, state: FSMContext):
         replacement = f'<tg-emoji emoji-id="{e.custom_emoji_id}">⬜</tg-emoji>'.encode("utf-16-le")
         encoded = encoded[:start] + replacement + encoded[end:]
     processed = encoded.decode("utf-16-le")
-    # Публикуем в канал-хранилище
     try:
         await message.bot.send_message(CHANNEL_ID, processed, parse_mode=ParseMode.HTML)
         await message.answer("Реклама опубликована.")
@@ -2047,6 +2107,7 @@ async def handle_text(message: Message, state: FSMContext):
     if not query:
         return
 
+    state_store.record_user_active(user_id)
     data = await state.get_data()
 
     # Фидбэк
@@ -2125,9 +2186,11 @@ async def callback_handler(callback: CallbackQuery, state: FSMContext):
 
     try:
         if data.startswith("fb:like:"):
+            state_store.add_feedback(True)
             await callback.message.answer(t_em(lang, "feedback_like"))
             return
         if data.startswith("fb:dislike:"):
+            state_store.add_feedback(False)
             item_name = data.split(":", 2)[2]
             try:
                 await callback.message.edit_reply_markup(
