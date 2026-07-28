@@ -86,6 +86,14 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext.Application").setLevel(logging.WARNING)
 
+# Попробуем импортировать переводчик
+try:
+    from deep_translator import GoogleTranslator
+    TRANSLATOR_AVAILABLE = True
+except ImportError:
+    TRANSLATOR_AVAILABLE = False
+    logger.warning("deep-translator не установлен. Перевод будет использовать встроенный словарь.")
+
 # --------------------------------------------------------------------------- #
 # Модель данных предмета
 # --------------------------------------------------------------------------- #
@@ -197,116 +205,25 @@ def generate_query_variants(raw_query: str) -> list[str]:
     return list(variants)
 
 # --------------------------------------------------------------------------- #
-# Автоматический перевод названий и база псевдонимов
+# Автоматический перевод названий (Google Translate + кэш)
 # --------------------------------------------------------------------------- #
 
-ROOT_TRANSLATIONS: dict[str, str] = {
-    "gun": "Пистолет", "revolver": "Револьвер", "blaster": "Бластер",
-    "beam": "Луч", "cannon": "Пушка", "shot": "Выстрел", "raygun": "Лучемёт",
-    "blade": "Лезвие", "knife": "Нож", "sword": "Меч", "dagger": "Кинжал",
-    "axe": "Топор", "battleaxe": "Боевой топор", "scythe": "Коса",
-    "edge": "Грань", "shard": "Осколок", "saw": "Пила", "handsaw": "Ножовка",
-    "cane": "Трость", "wand": "Жезл", "luger": "Люгер", "sabre": "Сабля",
-    "saber": "Сабля", "spear": "Копьё", "claw": "Коготь", "fang": "Клык",
-    "chopper": "Тесак", "cleaver": "Тесак", "crusher": "Дробитель",
-    "breaker": "Ледокол", "piercer": "Пронзатель", "slasher": "Потрошитель",
-    "phaser": "Фазер", "laser": "Лазер", "harvester": "Жнец",
-    "wing": "Крыло", "beam gun": "Лучевой пистолет",
-    "ice": "Лёд", "iceflake": "Ледяная снежинка", "icewing": "Ледокрыло",
-    "fire": "Огонь", "flame": "Пламя", "flames": "Пламя", "heat": "Жар",
-    "frost": "Мороз", "frostbite": "Обморожение", "snow": "Снег",
-    "snowflake": "Снежинка", "snowstorm": "Снежная буря", "blizzard": "Метель",
-    "winter": "Зима", "summer": "Лето", "spring": "Весна", "autumn": "Осень",
-    "chill": "Холод", "midnight": "Полночь", "darkness": "Тьма",
-    "shadow": "Тень", "void": "Пустота", "corrupt": "Порча",
-    "light": "Светлый", "dark": "Тёмный", "bright": "Яркий",
-    "star": "Звезда", "galaxy": "Галактика", "comet": "Комета",
-    "meteor": "Метеор", "aurora": "Аврора", "eclipse": "Затмение",
-    "nebula": "Туманность", "constellation": "Созвездие", "cosmic": "Космический",
-    "crystal": "Кристалл", "gemstone": "Драгоценный камень", "pearl": "Жемчуг",
-    "pearlshine": "Жемчужный блеск", "prismatic": "Призматический",
-    "rainbow": "Радуга", "pixel": "Пиксель", "virtual": "Виртуальный",
-    "plasma": "Плазма", "bio": "Био", "toxic": "Токсичный",
-    "electric": "Электрический", "spectral": "Спектральный", "spectre": "Призрак",
-    "ghost": "Призрак", "phantom": "Фантом", "soul": "Душа", "spirit": "Дух",
-    "bone": "Костяной", "blood": "Кровавый", "death": "Смерть",
-    "vampire": "Вампир", "zombie": "Зомби", "skeleton": "Скелет",
-    "night": "Ночной", "day": "Дневной", "dawn": "Рассвет",
-    "sunrise": "Рассвет", "sunset": "Закат", "moon": "Луна",
-    "harvest moon": "Урожайная луна", "eternal": "Вечный",
-    "evergreen": "Вечнозелёный", "clockwork": "Заводной механизм",
-    "makeshift": "Самодельный", "swirly": "Спиральный", "elderwood": "Элдервуд",
-    "logchopper": "Лесоруб", "hallow": "Хэллоуин", "hallows": "Хэллоуин",
-    "xmas": "Рождество", "christmas": "Рождество", "jingle": "Звенящий",
-    "candy": "Леденец", "candleflame": "Пламя свечи", "peppermint": "Мята перечная",
-    "ginger": "Имбирный", "gingermint": "Имбирная мята", "cookie": "Печенье",
-    "sugar": "Сахар", "sweet": "Конфета", "treat": "Сладость", "minty": "Мятный",
-    "egg": "Яйцо", "pumpking": "Тыквенный король", "turkey": "Индейка",
-    "bat": "Летучая мышь", "batwing": "Летучее крыло", "spider": "Паук",
-    "shark": "Акула", "dragon": "Дракон", "wolf": "Волк", "cat": "Кот",
-    "dog": "Пёс", "bunny": "Кролик", "bear": "Медведь", "fox": "Лис",
-    "pig": "Свин", "phoenix": "Феникс", "old glory": "Старая слава",
-    "seer": "Провидец", "tides": "Приливы", "waves": "Волны", "ocean": "Океан",
-    "flora": "Флора", "bloom": "Расцвет", "blossom": "Цветение",
-    "sakura": "Сакура", "ornament": "Украшение", "bauble": "Ёлочный шар",
-    "borealis": "Северное сияние", "australis": "Южное сияние",
-    "americ": "Америка", "america": "Америка", "amerilaser": "Америлазер",
-    "gold": "Золото", "golden": "Золотой", "silver": "Серебро",
-    "chroma": "Хрома", "c.": "Хрома", "godly": "Голди",
-    "red": "Красный", "blue": "Синий", "green": "Зелёный",
-    "purple": "Фиолетовый", "orange": "Оранжевый", "yellow": "Жёлтый",
-    "white": "Белый", "black": "Чёрный", "pink": "Розовый",
-    "traveler": "Путешественник", "traveler's": "Путешественника",
-    "travelers": "Путешественника", "heart": "Сердце", "prince": "Принц",
-    "cowboy": "Ковбой", "cotton candy": "Сахарная вата", "latte": "Латте",
-    "cavern": "Пещера", "beach": "Пляж", "broken": "Сломанный",
-    "splitter": "Разделитель", "harvest": "Урожай",
-}
-
-COMPOUND_SUFFIXES: list[str] = [
-    "battleaxe", "raygun", "handsaw", "logchopper",
-    "blade", "blaster", "shard", "cane", "beam", "wing", "gun",
-    "axe", "saw", "flake",
-]
-
-MERGED_COMPOUND_OVERRIDES: dict[str, str] = {
+# Встроенные переводы для игровых жаргонных терминов
+HARDCODED_RU_OVERRIDES: dict[str, str] = {
     "icewing": "Ледокрыло",
     "icebreaker": "Ледокол",
-    "icecrusher": "Ледокрушитель",
     "icepiercer": "Ледопронзатель",
-    "iceblaster": "Ледяной бластер",
-    "icebeam": "Ледяной луч",
-    "iceflake": "Ледяная снежинка",
-    "darkshot": "Тёмный выстрел",
-    "darksword": "Тёмный меч",
-    "darkbringer": "Несущий тьму",
-    "lightbringer": "Несущий свет",
-    "watergun": "Водный пистолет",
-    "snowcannon": "Снежная пушка",
-    "xenoknife": "Ксенонож",
-    "xenoshot": "Ксеновыстрел",
-    "alienbeam": "Луч пришельца",
-    "hallowgun": "Хэллоу-пистолет",
-    "hallowscythe": "Коса Хэллоуина",
-    "plasmabeam": "Плазменный луч",
-    "plasmablade": "Плазменное лезвие",
-    "bioblade": "Биолезвие",
-    "frostsaber": "Морозная сабля",
-    "gingerblade": "Имбирное лезвие",
-    "boneblade": "Костяное лезвие",
-    "ghostblade": "Лезвие призрака",
-    "nightblade": "Ночное лезвие",
-    "eggblade": "Лезвие-яйцо",
-    "cookieblade": "Лезвие-печенье",
-    "cookiecane": "Печенье-трость",
-    "eternalcane": "Вечная трость",
-    "lugercane": "Люгер-трость",
-    "jinglegun": "Звенящий пистолет",
-    "evergun": "Вечнозелёный пистолет",
+    "chroma traveler's gun": "Хрома пистолет путешественника",
     "traveler's gun": "Пистолет путешественника",
-    "traveler's axe": "Топор путешественника",
+    "elderwood scythe": "Коса Элдервуд",
+    "candleflame": "Пламя свечи",
+    "harvester": "Жнец",
+    "batwing": "Летучее крыло",
+    "makeshift": "Временный",
+    "corrupt": "Порча",
 }
 
+# Дополнительные жаргонные синонимы (ключ – нормализованное английское название, значения – русские варианты)
 ITEM_ALIASES: dict[str, list[str]] = {
     "icewing": ["ледокрыло", "ледяное крыло", "айсвинг"],
     "icebreaker": ["ледокол", "айсбрекер"],
@@ -317,84 +234,48 @@ ITEM_ALIASES: dict[str, list[str]] = {
     "candleflame": ["пламя свечи", "кэндлфлейм"],
     "harvester": ["жнец", "харвестер"],
     "batwing": ["летучее крыло", "батвинг", "крыло летучей мыши"],
-    "makeshift": ["самоделка", "самодельный"],
+    "makeshift": ["временный", "самоделка", "самодельный"],
     "corrupt": ["коррупт", "порча"],
+    "swirly blade": ["крутящийся клинок"],
+    "swirly gun": ["спиральный пистолет"],
+    "luger cane": ["трость люгер", "люгер трость"],
+    "ginger luger": ["имбирный люгер"],
+    "hallow's blade": ["клинок хэллоуина", "хэллоуинский клинок"],
 }
 
-def _split_compound_word(word: str) -> list[str]:
-    lower = word.lower()
-    for suffix in COMPOUND_SUFFIXES:
-        if lower.endswith(suffix) and len(lower) > len(suffix):
-            head = word[: len(word) - len(suffix)]
-            return [head, suffix]
-    return [word]
-
-def _normalize_apostrophe(text: str) -> str:
-    return text.replace("’", "'")
-
-def _translate_token(token: str) -> str:
-    normalized = _normalize_apostrophe(token).lower().strip(".,()")
-    candidates = [normalized]
-    if normalized.endswith("'s"):
-        candidates.append(normalized[:-2])
-    elif normalized.endswith("s") and not normalized.endswith("'s"):
-        candidates.append(normalized[:-1])
-    candidates.append(normalized.replace("'", ""))
-    for key in candidates:
-        if key and key in ROOT_TRANSLATIONS:
-            return ROOT_TRANSLATIONS[key]
-    return token
-
-def auto_translate_ru(name_en: str) -> str:
-    raw_words = name_en.split()
-    translated_parts: list[str] = []
-    i = 0
-    n = len(raw_words)
-
-    while i < n:
-        raw_word = raw_words[i]
-        stripped = raw_word.strip(".,()")
-
-        if i + 1 < n:
-            next_stripped = raw_words[i + 1].strip(".,()")
-            two_word_key = f"{_normalize_apostrophe(stripped).lower()} {_normalize_apostrophe(next_stripped).lower()}"
-            if two_word_key in MERGED_COMPOUND_OVERRIDES:
-                translated_parts.append(MERGED_COMPOUND_OVERRIDES[two_word_key])
-                i += 2
-                continue
-            if two_word_key in ROOT_TRANSLATIONS:
-                translated_parts.append(ROOT_TRANSLATIONS[two_word_key])
-                i += 2
-                continue
-
-        merged_key = _normalize_apostrophe(stripped).lower()
-        if merged_key in MERGED_COMPOUND_OVERRIDES:
-            translated_parts.append(MERGED_COMPOUND_OVERRIDES[merged_key])
-            i += 1
-            continue
-
-        direct = _translate_token(stripped)
-        if direct != stripped:
-            translated_parts.append(direct)
-            i += 1
-            continue
-
-        pieces = _split_compound_word(stripped)
-        if len(pieces) > 1:
-            translated_parts.append(
-                " ".join(_translate_token(p) for p in pieces)
-            )
-        else:
-            translated_parts.append(raw_word)
-        i += 1
-
-    return " ".join(translated_parts)
+def _translate_via_google(text_en: str) -> Optional[str]:
+    """Перевод с помощью Google Translate (требуется deep-translator). Возвращает None при ошибке."""
+    if not TRANSLATOR_AVAILABLE:
+        return None
+    try:
+        # ограничим частоту запросов
+        translator = GoogleTranslator(source='auto', target='ru')
+        result = translator.translate(text_en)
+        if result and isinstance(result, str):
+            return result.strip()
+    except Exception as e:
+        logger.warning("Ошибка перевода через Google: %s", e)
+    return None
 
 def get_ru_name(name_en: str) -> str:
+    """Возвращает русское название предмета, используя кэш, ручные оверрайды и Google Translate."""
     key = name_en.lower().strip()
-    if key in MERGED_COMPOUND_OVERRIDES:
-        return MERGED_COMPOUND_OVERRIDES[key]
-    return auto_translate_ru(name_en)
+    # Сначала проверим жёсткие переопределения
+    if key in HARDCODED_RU_OVERRIDES:
+        return HARDCODED_RU_OVERRIDES[key]
+    # Затем кэш переводов
+    cached = state_store.get_translation(name_en)
+    if cached:
+        return cached
+    # Попробуем перевести через Google
+    translated = _translate_via_google(name_en)
+    if translated:
+        # Проверка, что перевод не совпадает с оригиналом (не переведено)
+        if translated.lower() != name_en.lower():
+            state_store.save_translation(name_en, translated)
+            return translated
+    # Если ничего не получилось, вернём оригинал
+    return name_en
 
 # --------------------------------------------------------------------------- #
 # Парсинг
@@ -454,6 +335,7 @@ def _strip_name_tags(name: str) -> str:
     return _BRACKET_TAG_RE.sub(" ", name).strip()
 
 def guess_image_filenames(display_name: str) -> list[str]:
+    """Генерирует варианты имён файлов изображений для предмета."""
     clean = _strip_name_tags(display_name)
     clean = clean.replace("’", "'")
 
@@ -485,26 +367,39 @@ def guess_image_filenames(display_name: str) -> list[str]:
             candidates.append(name)
 
     joined_nospace = "".join(plain_words)
+    joined_underscore = "_".join(plain_words)
+    joined_dash = "-".join(plain_words)
+
     first_word = plain_words[0] if plain_words else ""
     last_word = plain_words[-1] if plain_words else ""
 
+    # Варианты с префиксом Chroma
     add(prefix + joined_nospace)
+    add(prefix + joined_underscore)
+    add(prefix + joined_dash)
     add(prefix + last_word)
     add(prefix + first_word)
     if len(plain_words) >= 2:
         initials = "".join(w[0].upper() for w in plain_words if w)
         add(prefix + initials)
-    if plain_words:
-        for cut in (6, 5, 4, 3):
-            if len(plain_words[0]) > cut:
-                add(prefix + plain_words[0][:cut])
+
+    # Без префикса
     add(joined_nospace)
+    add(joined_underscore)
+    add(joined_dash)
     add(last_word)
     add(first_word)
+    add(joined_nospace.lower())
+    add(joined_underscore.lower())
+
+    # Ещё несколько эвристик
+    for cut in (6, 5, 4, 3):
+        if len(plain_words[0]) > cut:
+            add(prefix + plain_words[0][:cut])
+
     safe_name = re.sub(r"[^\w\s-]", "", clean).strip().replace(" ", "_")
     add(safe_name)
     add(safe_name.replace("_", ""))
-    add("".join(w.capitalize() for w in plain_words))
 
     return [c for c in candidates if c]
 
@@ -668,6 +563,8 @@ class SearchEntry:
     key_norm: str
     key_sorted: str
     item_idx: int
+    # Добавим множество нормализованных токенов для фильтрации
+    tokens: set[str]
 
 class ValuesCache:
     def __init__(self) -> None:
@@ -699,8 +596,9 @@ class ValuesCache:
             for key in keys_to_add:
                 k_norm = normalize_text(key)
                 k_sorted = token_sorted_text(key)
+                tokens = set(k_norm.split())
                 if k_norm:
-                    index.append(SearchEntry(key_norm=k_norm, key_sorted=k_sorted, item_idx=idx))
+                    index.append(SearchEntry(key_norm=k_norm, key_sorted=k_sorted, item_idx=idx, tokens=tokens))
 
         return index
 
@@ -749,7 +647,6 @@ class ValuesCache:
                 return []
 
         best_by_idx: dict[int, float] = {}
-
         CHROMA_WORDS = {"chroma", "хрома", "c"}
 
         def _has_chroma_word(norm_text: str) -> bool:
@@ -762,10 +659,19 @@ class ValuesCache:
             if not v_norm:
                 continue
 
+            v_tokens = set(v_norm.split())
             query_has_chroma = _has_chroma_word(v_norm)
 
             for entry in index:
                 if allowed_idx is not None and entry.item_idx not in allowed_idx:
+                    continue
+
+                # Базовая оценка покрытия токенов: доля токенов запроса, присутствующих в названии
+                token_intersection = len(v_tokens & entry.tokens)
+                token_coverage = token_intersection / len(v_tokens) if v_tokens else 0.0
+
+                # Если ни один токен не совпал – низкий приоритет
+                if token_coverage == 0.0:
                     continue
 
                 score = 0.0
@@ -782,14 +688,15 @@ class ValuesCache:
                     if len_diff > 3 and score < 95.0:
                         score = max(0.0, score - len_diff * 3.0)
 
-                # Штраф за несовпадение наличия "chroma/хрома" между запросом и записью:
-                # если пользователь явно ищет хрома-версию, а запись — не хрома (или наоборот),
-                # это разные предметы и совпадение остальных слов не должно перевешивать это.
+                # Штраф за несовпадение Chroma
                 entry_has_chroma = _has_chroma_word(entry.key_norm)
                 if query_has_chroma != entry_has_chroma:
                     score = max(0.0, score - 40.0)
                 elif query_has_chroma and entry_has_chroma:
                     score = min(100.0, score + 5.0)
+
+                # Умножаем на покрытие токенов (чем больше слов запроса присутствует, тем выше)
+                score *= token_coverage
 
                 if score > best_by_idx.get(entry.item_idx, -1):
                     best_by_idx[entry.item_idx] = float(score)
@@ -798,7 +705,7 @@ class ValuesCache:
             return []
 
         ranked = sorted(best_by_idx.items(), key=lambda kv: kv[1], reverse=True)
-        THRESHOLD = 58.0
+        THRESHOLD = 55.0
         result: list[tuple[Item, float]] = []
         for idx, score in ranked:
             if score < THRESHOLD:
@@ -934,6 +841,7 @@ class StateStore:
         self.user_langs: dict[str, str] = {}
         self.user_filters: dict[str, dict] = {}
         self.known_images: dict[str, str] = {}
+        self.translations: dict[str, str] = {}  # кэш английский -> русский
         self.refresh_interval_days: int = DEFAULT_REFRESH_DAYS
 
         self._dirty_event = threading.Event()
@@ -950,6 +858,7 @@ class StateStore:
                     "user_langs": dict(self.user_langs),
                     "user_filters": {k: dict(v) for k, v in self.user_filters.items()},
                     "known_images": dict(self.known_images),
+                    "translations": dict(self.translations),
                 },
                 "cache": {
                     "last_updated": cache.last_updated or None,
@@ -972,6 +881,9 @@ class StateStore:
             }
             self.known_images = {
                 str(k): str(v) for k, v in (settings.get("known_images", {}) or {}).items()
+            }
+            self.translations = {
+                str(k): str(v) for k, v in (settings.get("translations", {}) or {}).items()
             }
 
         raw_items = cache_info.get("items")
@@ -1035,8 +947,8 @@ class StateStore:
 
         self._load_state_dict(state)
         logger.info(
-            "Состояние восстановлено из канала: %d пользователей, %d фильтров, %d картинок.",
-            len(self.user_langs), len(self.user_filters), len(self.known_images),
+            "Состояние восстановлено из канала: %d пользователей, %d фильтров, %d картинок, %d переводов.",
+            len(self.user_langs), len(self.user_filters), len(self.known_images), len(self.translations),
         )
         return True
 
@@ -1170,6 +1082,18 @@ class StateStore:
             if self.known_images.get(name_key) == url:
                 return
             self.known_images[name_key] = url
+        self.mark_dirty()
+
+    def get_translation(self, en_text: str) -> Optional[str]:
+        with self._lock:
+            return self.translations.get(en_text.lower().strip())
+
+    def save_translation(self, en_text: str, ru_text: str) -> None:
+        with self._lock:
+            key = en_text.lower().strip()
+            if self.translations.get(key) == ru_text:
+                return
+            self.translations[key] = ru_text
         self.mark_dirty()
 
 
@@ -1449,8 +1373,7 @@ def _try_download_single(url: str) -> Optional[Image.Image]:
         return None
 
 def refresh_item_image_candidates(item: Item) -> list[str]:
-    """Делает запрос к ScrapingAnt для страницы категории предмета и собирает ВСЕ кандидаты его картинки
-    (реальный src со страницы + все угаданные варианты имени файла), а не только первый попавшийся."""
+    """Делает запрос к ScrapingAnt для страницы категории предмета и собирает ВСЕ кандидаты его картинки."""
     slug = item.category_slug
     target_url = f"{BASE_URL}/mm2/{slug}"
     api_url = f"https://api.scrapingant.com/v2/general?url={target_url}&x-api-key={SCRAPINGANT_API_KEY}&browser=true"
@@ -1492,8 +1415,24 @@ def refresh_item_image_candidates(item: Item) -> list[str]:
         logger.exception("Не удалось обновить URL изображения для %s", item.name)
     return fresh_candidates
 
+def _candidate_matches_item(url: str, item_name: str) -> bool:
+    """Проверяет, что URL кандидата содержит все значимые слова из названия предмета."""
+    name_clean = _strip_name_tags(item_name).lower()
+    name_words = set(re.findall(r"[a-z0-9]+", name_clean))
+    # убираем стоп-слова
+    name_words -= _IMG_STOPWORDS
+    if not name_words:
+        return True
+    url_lower = url.lower()
+    # Проверяем, что каждое значимое слово присутствует в URL
+    return all(word in url_lower for word in name_words)
+
 def download_item_image(item: Item) -> Optional[Image.Image]:
-    candidates = list(item.image_url_candidates) or ([item.image_url] if item.image_url else [])
+    # Сначала берем кандидатов, которые точно содержат все ключевые слова
+    candidates = [url for url in item.image_url_candidates if _candidate_matches_item(url, item.name)]
+    if not candidates:
+        candidates = list(item.image_url_candidates)  # fallback
+
     for url in candidates:
         img = _try_download_single(url)
         if img is not None:
@@ -1504,9 +1443,10 @@ def download_item_image(item: Item) -> Optional[Image.Image]:
 
     # Все кандидаты провалились — пробуем обновить и перебрать полный список через ScrapingAnt
     fresh_candidates = refresh_item_image_candidates(item)
-    for fresh_url in fresh_candidates:
+    fresh_filtered = [u for u in fresh_candidates if _candidate_matches_item(u, item.name)]
+    for fresh_url in fresh_filtered:
         if fresh_url in candidates:
-            continue  # уже пробовали
+            continue
         img = _try_download_single(fresh_url)
         if img is not None:
             item.image_url = fresh_url
