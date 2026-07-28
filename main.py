@@ -1,5 +1,4 @@
-from __future__ import annotations
-
+import asyncio
 import html
 import io
 import json
@@ -22,23 +21,22 @@ import requests
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-from telegram import (
-    InlineKeyboardButton,
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.enums import ParseMode
+from aiogram.filters import Command
+from aiogram.types import (
     InlineKeyboardMarkup,
-    Update,
+    InlineKeyboardButton,
+    Message,
+    CallbackQuery,
+    InlineQuery,
 )
-from telegram.constants import ParseMode
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
-from telegram.error import Conflict, NetworkError, TimedOut, BadRequest
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.client.default import DefaultBotProperties
+from aiogram.exceptions import TelegramBadRequest
 
 # --------------------------------------------------------------------------- #
 # Конфигурация
@@ -84,11 +82,9 @@ logging.basicConfig(
 logger = logging.getLogger("mm2bot")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
-logging.getLogger("telegram.ext.Application").setLevel(logging.WARNING)
 
 try:
     from deep_translator import GoogleTranslator
-
     TRANSLATOR_AVAILABLE = True
 except ImportError:
     TRANSLATOR_AVAILABLE = False
@@ -139,10 +135,9 @@ PREMIUM = {
     "new": 5382357040008021292,
     "soon": 5440621591387980068,
     "free": 5422439311196834318,
-    "lock": 5222444124698853913,  # замочек
+    "lock": 5222444124698853913,
 }
 
-# Fallback-символы на случай отключения премиум-эмодзи
 FALLBACK_EMOJI = {
     "wave": "👋",
     "stats": "📊",
@@ -213,12 +208,12 @@ def emoji(name: str) -> str:
     return FALLBACK_EMOJI.get(name, f"[{name}]")
 
 
-def icon_id(name: str) -> Optional[str]:
+def icon_id(name: str) -> Optional[int]:
     """Возвращает ID эмодзи для использования в icon_custom_emoji_id кнопки."""
     if use_premium():
         eid = PREMIUM.get(name)
         if eid:
-            return str(eid)
+            return int(eid)
     return None
 
 
@@ -541,7 +536,7 @@ def get_ru_name(name_en: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Парсинг
+# Парсинг (тот же самый, что и раньше)
 # --------------------------------------------------------------------------- #
 
 STABILITY_MAP_RU = {
@@ -925,7 +920,7 @@ class ValuesCache:
 cache = ValuesCache()
 
 # --------------------------------------------------------------------------- #
-# StateStore (добавлен флаг use_premium_emoji)
+# StateStore (тот же, что и раньше)
 # --------------------------------------------------------------------------- #
 
 DEFAULT_LANG = "ru"
@@ -990,7 +985,7 @@ class StateStore:
         self.known_images: dict[str, str] = {}
         self.translations: dict[str, str] = {}
         self.refresh_interval_days: int = DEFAULT_REFRESH_DAYS
-        self.use_premium_emoji: bool = True  # по умолчанию премиум включены
+        self.use_premium_emoji: bool = True
         self._dirty_event = threading.Event()
         self._stop_event = threading.Event()
         self._debounce_thread: Optional[threading.Thread] = None
@@ -1200,7 +1195,7 @@ class StateStore:
 state_store = StateStore(channel_id=CHANNEL_ID)
 
 # --------------------------------------------------------------------------- #
-# Локализация
+# Локализация (исправленные тексты без {free} и {rainbow})
 # --------------------------------------------------------------------------- #
 
 RARITY_RU_LABELS = {
@@ -1236,10 +1231,8 @@ def rarity_label_localized(lang: str, slug: str) -> str:
 TEXTS: dict[str, dict[str, str]] = {"ru": {}, "en": {}}
 
 
-# Эмодзи в тексте — разрешаются динамически через t_em
 def emoji_dict() -> dict[str, str]:
-    """Возвращает словарь эмодзи для подстановки в шаблоны.
-    Ключи не должны совпадать с именами параметров t() (lang, key)."""
+    """Словарь эмодзи для подстановки в шаблоны (ключи не должны конфликтовать с lang/key)."""
     return {
         "wave": emoji("wave"),
         "stats": emoji("stats"),
@@ -1247,7 +1240,7 @@ def emoji_dict() -> dict[str, str]:
         "cross": emoji("cross"),
         "like": emoji("like"),
         "dislike": emoji("dislike"),
-        "globe": emoji("lang"),          # переименован, чтобы не конфликтовать с lang
+        "globe": emoji("lang"),
         "filters": emoji("filters"),
         "list": emoji("list"),
         "value": emoji("value"),
@@ -1269,7 +1262,6 @@ def emoji_dict() -> dict[str, str]:
 
 
 def t(lang: str, key: str, **kwargs) -> str:
-    """Возвращает локализованный текст с подставленными kwargs."""
     lang = lang if lang in TEXTS else DEFAULT_LANG
     template = TEXTS[lang].get(key, TEXTS[DEFAULT_LANG].get(key, key))
     return template.format(**kwargs) if kwargs else template
@@ -1280,7 +1272,7 @@ def t_em(lang: str, key: str, **kwargs) -> str:
     return t(lang, key, **emoji_dict(), **kwargs)
 
 
-# Заполнение текстов с плейсхолдерами {wave} и т.п.
+# Заполнение текстов – исправлено: {pencil} и {settings}
 TEXTS["ru"].update({
     "start": (
         "{wave} <b>Привет!</b> Я бот-оценщик ценности предметов Murder Mystery 2.\n\n"
@@ -1446,7 +1438,7 @@ TEXTS["en"].update({
 })
 
 # --------------------------------------------------------------------------- #
-# Шрифты и картинки
+# Шрифты и картинки (те же, что и ранее)
 # --------------------------------------------------------------------------- #
 
 FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
@@ -1689,41 +1681,50 @@ def format_item_caption(item: Item, lang: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Кнопки с цветами и иконками
+# Клавиатуры aiogram с поддержкой icon_custom_emoji_id и style
 # --------------------------------------------------------------------------- #
 
 def make_button(text: str, callback_data: str, icon_name: str = None, style: str = None) -> InlineKeyboardButton:
-    """
-    Создаёт кнопку. Если use_premium и задан icon_name, добавляет icon_custom_emoji_id
-    и убирает эмодзи из текста (текст должен быть без эмодзи).
-    style может быть 'primary', 'success', 'danger'.
-    """
+    kwargs = {"text": text, "callback_data": callback_data}
     if use_premium() and icon_name:
-        icon_id_str = icon_id(icon_name)
-        if icon_id_str:
-            return InlineKeyboardButton(text=text, callback_data=callback_data,
-                                        icon_custom_emoji_id=icon_id_str, style=style)
-    # Без иконки или при выключенных премиум
-    return InlineKeyboardButton(text=text, callback_data=callback_data, style=style)
+        eid = icon_id(icon_name)
+        if eid is not None:
+            kwargs["icon_custom_emoji_id"] = int(eid)
+    if style:
+        kwargs["style"] = style
+    return InlineKeyboardButton(**kwargs)
 
 
 def make_button_with_emoji(text: str, callback_data: str, icon_name: str = None, style: str = None) -> InlineKeyboardButton:
-    """
-    Если премиум включены, кнопка с иконкой, текст без эмодзи.
-    Если выключены, в текст добавляется обычный эмодзи.
-    """
     if use_premium() and icon_name:
-        return InlineKeyboardButton(text=text, callback_data=callback_data,
-                                    icon_custom_emoji_id=icon_id(icon_name), style=style)
+        return make_button(text, callback_data, icon_name=icon_name, style=style)
     else:
-        # Добавляем fallback-эмодзи перед текстом
         fb = FALLBACK_EMOJI.get(icon_name, "")
-        return InlineKeyboardButton(text=f"{fb} {text}".strip(), callback_data=callback_data, style=style)
+        display_text = f"{fb} {text}".strip() if fb else text
+        return InlineKeyboardButton(text=display_text, callback_data=callback_data, style=style)
 
 
-# --------------------------------------------------------------------------- #
-# UI компоненты с учётом флага премиум
-# --------------------------------------------------------------------------- #
+def feedback_keyboard(lang: str, item_name: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            make_button_with_emoji("", f"fb:like:{item_name}", icon_name="like", style="primary"),
+            make_button_with_emoji("", f"fb:dislike:{item_name}", icon_name="dislike", style="danger"),
+        ]
+    ])
+
+
+def dislike_reason_keyboard(lang: str, item_name: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t_em(lang, "feedback_reason_bad_result"),
+                              callback_data=f"fb_reason:bad_result:{item_name}")],
+        [InlineKeyboardButton(text=t_em(lang, "feedback_reason_bad_translation"),
+                              callback_data=f"fb_reason:bad_translation:{item_name}")],
+        [InlineKeyboardButton(text=t_em(lang, "feedback_reason_bad_image"),
+                              callback_data=f"fb_reason:bad_image:{item_name}")],
+        [InlineKeyboardButton(text=t_em(lang, "feedback_reason_other"),
+                              callback_data=f"fb_reason:other:{item_name}")],
+    ])
+
 
 LIST_PAGE_SIZE = 8
 
@@ -1745,7 +1746,7 @@ def _filters_summary_value(lang: str, filters: ItemFilters, kind: str) -> str:
 
 
 def build_filters_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMarkup:
-    rows = [
+    return InlineKeyboardMarkup(inline_keyboard=[
         [make_button_with_emoji(
             t_em(lang, "filters_btn_min", val=_filters_summary_value(lang, filters, "min")),
             "filt:ask_min", icon_name="value")],
@@ -1762,33 +1763,38 @@ def build_filters_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMar
             make_button(t_em(lang, "filters_btn_reset"), "filt:reset", style="danger"),
             make_button(t_em(lang, "filters_btn_apply"), "filt:apply", style="success"),
         ],
-    ]
-    return InlineKeyboardMarkup(rows)
+    ])
 
 
 def build_rarity_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMarkup:
-    rows = [[make_button(
-        ("✅ " if filters.rarity_slug == "all" else "") + t_em(lang, "filters_option_all"),
-        "filt:set_rarity:all")]]
+    buttons = [
+        [make_button(
+            ("✅ " if filters.rarity_slug == "all" else "") + t_em(lang, "filters_option_all"),
+            "filt:set_rarity:all")]
+    ]
     for slug, _label, emoji_char in CATEGORIES:
         mark = "✅ " if filters.rarity_slug == slug else ""
-        rows.append([InlineKeyboardButton(f"{mark}{emoji_char} {rarity_label_localized(lang, slug)}",
-                                          callback_data=f"filt:set_rarity:{slug}")])
-    rows.append([make_button_with_emoji("Назад", "filt:back", icon_name="left", style="primary")])
-    return InlineKeyboardMarkup(rows)
+        buttons.append([InlineKeyboardButton(
+            text=f"{mark}{emoji_char} {rarity_label_localized(lang, slug)}",
+            callback_data=f"filt:set_rarity:{slug}")])
+    buttons.append([make_button_with_emoji("Назад", "filt:back", icon_name="left", style="primary")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def build_stability_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMarkup:
-    rows = [[make_button(
-        ("✅ " if filters.stability_key == "all" else "") + t_em(lang, "filters_option_all"),
-        "filt:set_stability:all")]]
+    buttons = [
+        [make_button(
+            ("✅ " if filters.stability_key == "all" else "") + t_em(lang, "filters_option_all"),
+            "filt:set_stability:all")]
+    ]
     for key, ru_label, emoji_char in STABILITY_FILTER_OPTIONS:
         label = ru_label if lang == "ru" else key.title()
         mark = "✅ " if filters.stability_key == key else ""
-        rows.append([InlineKeyboardButton(f"{mark}{emoji_char} {label}",
-                                          callback_data=f"filt:set_stability:{key}")])
-    rows.append([make_button_with_emoji("Назад", "filt:back", icon_name="left", style="primary")])
-    return InlineKeyboardMarkup(rows)
+        buttons.append([InlineKeyboardButton(
+            text=f"{mark}{emoji_char} {label}",
+            callback_data=f"filt:set_stability:{key}")])
+    buttons.append([make_button_with_emoji("Назад", "filt:back", icon_name="left", style="primary")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def build_list_keyboard(lang: str, page: int, total_pages: int) -> InlineKeyboardMarkup:
@@ -1796,11 +1802,11 @@ def build_list_keyboard(lang: str, page: int, total_pages: int) -> InlineKeyboar
     if page > 0:
         nav.append(make_button_with_emoji("", f"list:page:{page - 1}", icon_name="left", style="primary"))
     nav.append(InlineKeyboardButton(
-        t_em(lang, "list_nav_page", page=page + 1, total=max(total_pages, 1)),
+        text=t_em(lang, "list_nav_page", page=page + 1, total=max(total_pages, 1)),
         callback_data="list:noop"))
     if page < total_pages - 1:
         nav.append(make_button_with_emoji("", f"list:page:{page + 1}", icon_name="right", style="primary"))
-    return InlineKeyboardMarkup([nav])
+    return InlineKeyboardMarkup(inline_keyboard=[nav])
 
 
 def render_list_page_text(lang: str, items: list[Item], page: int, total_pages: int) -> str:
@@ -1814,68 +1820,60 @@ def render_list_page_text(lang: str, items: list[Item], page: int, total_pages: 
     return "\n".join(lines)
 
 
-async def send_item_card(update: Update, context: ContextTypes.DEFAULT_TYPE, item: Item, lang: str) -> None:
-    chat_id = update.effective_chat.id
+async def send_item_card(chat_id: int, item: Item, lang: str, bot: Bot) -> None:
     caption = format_item_caption(item, lang)
     try:
         photo = create_item_image(item, lang)
-        await context.bot.send_photo(
-            chat_id=chat_id, photo=photo, caption=caption, parse_mode=ParseMode.HTML,
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=types.BufferedInputFile(photo.getvalue(), filename="item.jpg"),
+            caption=caption,
+            parse_mode=ParseMode.HTML,
             reply_markup=feedback_keyboard(lang, item.name),
         )
     except Exception:
         logger.exception("Не удалось отправить изображение для '%s'", item.name)
-        await context.bot.send_message(
-            chat_id=chat_id, text=caption, parse_mode=ParseMode.HTML,
+        await bot.send_message(
+            chat_id=chat_id,
+            text=caption,
+            parse_mode=ParseMode.HTML,
             reply_markup=feedback_keyboard(lang, item.name),
         )
 
 
-def feedback_keyboard(lang: str, item_name: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            make_button_with_emoji("", f"fb:like:{item_name}", icon_name="like", style="primary"),
-            make_button_with_emoji("", f"fb:dislike:{item_name}", icon_name="dislike", style="danger"),
-        ]
-    ])
-
-
-def dislike_reason_keyboard(lang: str, item_name: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(t_em(lang, "feedback_reason_bad_result"),
-                              callback_data=f"fb_reason:bad_result:{item_name}")],
-        [InlineKeyboardButton(t_em(lang, "feedback_reason_bad_translation"),
-                              callback_data=f"fb_reason:bad_translation:{item_name}")],
-        [InlineKeyboardButton(t_em(lang, "feedback_reason_bad_image"),
-                              callback_data=f"fb_reason:bad_image:{item_name}")],
-        [InlineKeyboardButton(t_em(lang, "feedback_reason_other"),
-                              callback_data=f"fb_reason:other:{item_name}")],
-    ])
-
-
 # --------------------------------------------------------------------------- #
-# Команды
+# Обработчики aiogram
 # --------------------------------------------------------------------------- #
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    lang = state_store.get_user_lang(update.effective_user.id)
-    await update.message.reply_text(t_em(lang, "start"), parse_mode=ParseMode.HTML)
+dp = Dispatcher()
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    lang = state_store.get_user_lang(update.effective_user.id)
-    await update.message.reply_text(t_em(lang, "help"), parse_mode=ParseMode.HTML)
+# Команда /start
+@dp.message(Command("start"))
+async def start_cmd(message: Message):
+    lang = state_store.get_user_lang(message.from_user.id)
+    await message.answer(t_em(lang, "start"), parse_mode=ParseMode.HTML)
 
 
-async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    lang = state_store.get_user_lang(update.effective_user.id)
-    rows = [[InlineKeyboardButton(name, callback_data=f"setlang:{code}")] for code, name in SUPPORTED_LANGS.items()]
-    await update.message.reply_text(t_em(lang, "settings_title"), parse_mode=ParseMode.HTML,
-                                    reply_markup=InlineKeyboardMarkup(rows))
+@dp.message(Command("help"))
+async def help_cmd(message: Message):
+    lang = state_store.get_user_lang(message.from_user.id)
+    await message.answer(t_em(lang, "help"), parse_mode=ParseMode.HTML)
 
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    lang = state_store.get_user_lang(update.effective_user.id)
+@dp.message(Command("settings"))
+async def settings_cmd(message: Message):
+    lang = state_store.get_user_lang(message.from_user.id)
+    builder = InlineKeyboardBuilder()
+    for code, name in SUPPORTED_LANGS.items():
+        builder.button(text=name, callback_data=f"setlang:{code}")
+    await message.answer(t_em(lang, "settings_title"), parse_mode=ParseMode.HTML,
+                         reply_markup=builder.as_markup())
+
+
+@dp.message(Command("status"))
+async def status_cmd(message: Message):
+    lang = state_store.get_user_lang(message.from_user.id)
     count = cache.size
     last_update = time.strftime("%Y-%m-%d %H:%M:%S",
                                 time.localtime(cache.last_updated)) if cache.last_updated else t_em(lang, "never")
@@ -1883,88 +1881,116 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         text = t_em(lang, "status_report", count=count, last_update=last_update, error=cache.last_error)
     else:
         text = t_em(lang, "status_report_ok", count=count, last_update=last_update)
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    await message.answer(text, parse_mode=ParseMode.HTML)
 
 
-async def setrefresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    lang = state_store.get_user_lang(update.effective_user.id)
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text(t_em(lang, "admin_only"))
+@dp.message(Command("setrefresh"))
+async def setrefresh_cmd(message: Message):
+    lang = state_store.get_user_lang(message.from_user.id)
+    if message.from_user.id != ADMIN_ID:
+        await message.answer(t_em(lang, "admin_only"))
         return
-    args = context.args
-    if not args:
+    args = message.text.split()
+    if len(args) < 2:
         days = state_store.get_refresh_interval_days()
-        await update.message.reply_text(t_em(lang, "admin_set_refresh", days=days))
+        await message.answer(t_em(lang, "admin_set_refresh", days=days))
         return
     try:
-        days = int(args[0])
+        days = int(args[1])
         if not (1 <= days <= 90):
             raise ValueError
     except ValueError:
-        await update.message.reply_text(t_em(lang, "admin_refresh_invalid"))
+        await message.answer(t_em(lang, "admin_refresh_invalid"))
         return
     state_store.set_refresh_interval_days(days)
-    scheduler = context.application.bot_data.get("scheduler")
+    scheduler = bot_data.get("scheduler")
     if scheduler:
         try:
-            scheduler.reschedule_job("cache_refresh", trigger="interval", seconds=days * 86400)
+            scheduler.reschedule_job("cache_refresh", trigger=IntervalTrigger(days=days))
         except Exception:
             logger.exception("Не удалось перепланировать задачу обновления кэша")
-    await update.message.reply_text(t_em(lang, "admin_refresh_updated", days=days))
+    await message.answer(t_em(lang, "admin_refresh_updated", days=days))
 
 
-async def togglepremium_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Админская команда для переключения премиум-эмодзи."""
-    lang = state_store.get_user_lang(update.effective_user.id)
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text(t_em(lang, "admin_only"))
+@dp.message(Command("togglepremium"))
+async def togglepremium_cmd(message: Message):
+    lang = state_store.get_user_lang(message.from_user.id)
+    if message.from_user.id != ADMIN_ID:
+        await message.answer(t_em(lang, "admin_only"))
         return
     current = state_store.get_use_premium_emoji()
     new_val = not current
     state_store.set_use_premium_emoji(new_val)
     status = "включены" if new_val else "выключены"
-    await update.message.reply_text(f"Премиум-эмодзи {status}.")
+    await message.answer(f"Премиум-эмодзи {status}.")
 
 
-async def filters_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
+@dp.message(Command("filters"))
+async def filters_cmd(message: Message, state_data: dict = None):
+    user_id = message.from_user.id
     lang = state_store.get_user_lang(user_id)
-    context.user_data.pop("awaiting_filter_input", None)
     filters_obj = state_store.get_user_filters(user_id)
-    await update.message.reply_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
-                                    reply_markup=build_filters_keyboard(lang, filters_obj))
+    # Очищаем ожидание ввода
+    state_data.pop("awaiting_filter_input", None)
+    await message.answer(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                         reply_markup=build_filters_keyboard(lang, filters_obj))
 
 
-async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
+@dp.message(Command("list"))
+async def list_cmd(message: Message):
+    user_id = message.from_user.id
     lang = state_store.get_user_lang(user_id)
     if cache.size == 0:
-        await update.message.reply_text(t_em(lang, "cache_empty"))
+        await message.answer(t_em(lang, "cache_empty"))
         return
     filters_obj = state_store.get_user_filters(user_id)
     items = cache.all_items(filters_obj)
     if not items:
-        await update.message.reply_text(t_em(lang, "list_empty"), parse_mode=ParseMode.HTML)
+        await message.answer(t_em(lang, "list_empty"), parse_mode=ParseMode.HTML)
         return
     total_pages = max(1, math.ceil(len(items) / LIST_PAGE_SIZE))
     page = 0
     text = render_list_page_text(lang, items, page, total_pages)
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML,
-                                    reply_markup=build_list_keyboard(lang, page, total_pages))
+    await message.answer(text, parse_mode=ParseMode.HTML,
+                         reply_markup=build_list_keyboard(lang, page, total_pages))
 
 
-async def search_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
+@dp.message(Command("refresh12345"))
+async def force_refresh_cmd(message: Message):
+    lang = state_store.get_user_lang(message.from_user.id)
+    if message.from_user.id != ADMIN_ID:
+        await message.answer(t_em(lang, "admin_only"))
+        return
+    await message.answer(f"{emoji('refresh')} Запускаю принудительное обновление кэша...")
+    threading.Thread(target=cache.refresh, daemon=True).start()
+
+
+@dp.message(Command("cancel"))
+async def cancel_cmd(message: Message, state_data: dict = None):
+    if state_data and state_data.get("awaiting_feedback"):
+        state_data.pop("awaiting_feedback")
+        state_data.pop("feedback_reason", None)
+        lang = state_store.get_user_lang(message.from_user.id)
+        await message.answer(t_em(lang, "feedback_cancelled"))
+    else:
+        await message.answer("Нечего отменять.")
+
+
+# Обработчик текстовых сообщений (поиск предметов и диалоги фильтров/фидбэка)
+@dp.message(F.text)
+async def handle_text(message: Message, state_data: dict = None):
+    user_id = message.from_user.id
     lang = state_store.get_user_lang(user_id)
-    query = (update.message.text or "").strip()
+    query = message.text.strip()
     if not query:
         return
 
-    if context.user_data.get("awaiting_feedback"):
-        item_name = context.user_data["awaiting_feedback"]
-        reason = context.user_data.get("feedback_reason", "unknown")
+    # Ожидание ввода для фидбэка
+    if state_data and state_data.get("awaiting_feedback"):
+        item_name = state_data["awaiting_feedback"]
+        reason = state_data.get("feedback_reason", "unknown")
         feedback_text = query
-        user = update.effective_user
+        user = message.from_user
         msg = (
             f"📩 <b>Фидбэк от пользователя</b>\n"
             f"👤 {user.mention_html()} (ID: {user.id})\n"
@@ -1973,245 +1999,226 @@ async def search_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"📝 Комментарий: {html.escape(feedback_text)}"
         )
         try:
-            await context.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode=ParseMode.HTML)
+            await message.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode=ParseMode.HTML)
         except Exception as e:
             logger.error("Не удалось отправить фидбэк админу: %s", e)
-        context.user_data.pop("awaiting_feedback", None)
-        context.user_data.pop("feedback_reason", None)
-        await update.message.reply_text(t_em(lang, "feedback_sent"))
+        state_data.pop("awaiting_feedback")
+        state_data.pop("feedback_reason", None)
+        await message.answer(t_em(lang, "feedback_sent"))
         return
 
-    awaiting = context.user_data.get("awaiting_filter_input")
-    if awaiting in ("min", "max"):
+    # Ожидание ввода числа для фильтра
+    if state_data and state_data.get("awaiting_filter_input") in ("min", "max"):
         try:
-            value = int(query.strip())
+            value = int(query)
         except ValueError:
-            await update.message.reply_text(t_em(lang, "filters_invalid_number"))
+            await message.answer(t_em(lang, "filters_invalid_number"))
             return
         filters_obj = state_store.get_user_filters(user_id)
-        if awaiting == "min":
+        if state_data["awaiting_filter_input"] == "min":
             if value < 0:
-                await update.message.reply_text(t_em(lang, "filters_invalid_negative"))
+                await message.answer(t_em(lang, "filters_invalid_negative"))
                 return
             if filters_obj.max_value != -1 and value > filters_obj.max_value:
-                await update.message.reply_text(t_em(lang, "filters_invalid_range"))
+                await message.answer(t_em(lang, "filters_invalid_range"))
                 return
             filters_obj.min_value = value
         else:
             if value != -1 and value < 0:
-                await update.message.reply_text(t_em(lang, "filters_invalid_negative"))
+                await message.answer(t_em(lang, "filters_invalid_negative"))
                 return
             if value != -1 and value < filters_obj.min_value:
-                await update.message.reply_text(t_em(lang, "filters_invalid_range"))
+                await message.answer(t_em(lang, "filters_invalid_range"))
                 return
             filters_obj.max_value = value
         state_store.set_user_filters(user_id, filters_obj)
-        context.user_data.pop("awaiting_filter_input", None)
-        await update.message.reply_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
-                                        reply_markup=build_filters_keyboard(lang, filters_obj))
+        state_data.pop("awaiting_filter_input")
+        await message.answer(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                             reply_markup=build_filters_keyboard(lang, filters_obj))
         return
 
+    # Поиск предмета
     if cache.size == 0:
-        await update.message.reply_text(t_em(lang, "cache_empty"))
+        await message.answer(t_em(lang, "cache_empty"))
         return
 
     filters_obj = state_store.get_user_filters(user_id)
     results = cache.search(query, limit=5, filters=filters_obj)
     if not results:
-        await update.message.reply_text(t_em(lang, "not_found", query=html.escape(query)), parse_mode=ParseMode.HTML)
+        await message.answer(t_em(lang, "not_found", query=html.escape(query)), parse_mode=ParseMode.HTML)
         return
 
     best_item, _score = results[0]
-    await send_item_card(update, context, best_item, lang)
+    await send_item_card(message.chat.id, best_item, lang, message.bot)
 
 
-async def force_refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
+# Callback-обработчик
+@dp.callback_query()
+async def callback_handler(callback: CallbackQuery, state_data: dict = None):
+    user_id = callback.from_user.id
     lang = state_store.get_user_lang(user_id)
-    if user_id != ADMIN_ID:
-        await update.message.reply_text(t_em(lang, "admin_only"))
-        return
-    await update.message.reply_text(f"{emoji('refresh')} Запускаю принудительное обновление кэша...")
-    threading.Thread(target=cache.refresh, daemon=True).start()
-
-
-async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if context.user_data.get("awaiting_feedback"):
-        context.user_data.pop("awaiting_feedback", None)
-        context.user_data.pop("feedback_reason", None)
-        lang = state_store.get_user_lang(update.effective_user.id)
-        await update.message.reply_text(t_em(lang, "feedback_cancelled"))
-    else:
-        await update.message.reply_text("Нечего отменять.")
-
-
-# --------------------------------------------------------------------------- #
-# Callback Query
-# --------------------------------------------------------------------------- #
-
-async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    user_id = update.effective_user.id
-    lang = state_store.get_user_lang(user_id)
-    data = query.data or ""
+    data = callback.data
+    await callback.answer()  # всегда отвечаем, чтобы убрать часики
 
     try:
+        # Фидбэк
         if data.startswith("fb:like:"):
-            await query.answer(t_em(lang, "feedback_like"))
+            await callback.message.answer(t_em(lang, "feedback_like"))
             return
-
         if data.startswith("fb:dislike:"):
             item_name = data.split(":", 2)[2]
-            await query.answer()
             try:
-                await query.edit_message_reply_markup(reply_markup=dislike_reason_keyboard(lang, item_name))
-            except BadRequest:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=t_em(lang, "feedback_dislike"),
-                    reply_markup=dislike_reason_keyboard(lang, item_name),
-                )
+                await callback.message.edit_reply_markup(
+                    reply_markup=dislike_reason_keyboard(lang, item_name))
+            except TelegramBadRequest:
+                await callback.message.answer(
+                    t_em(lang, "feedback_dislike"),
+                    reply_markup=dislike_reason_keyboard(lang, item_name))
             return
-
         if data.startswith("fb_reason:"):
             parts = data.split(":", 2)
             reason = parts[1]
             item_name = parts[2] if len(parts) > 2 else ""
-            context.user_data["awaiting_feedback"] = item_name
-            context.user_data["feedback_reason"] = reason
-            await query.answer()
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=t_em(lang, "feedback_ask_details"),
-                parse_mode=ParseMode.HTML,
-            )
+            state_data["awaiting_feedback"] = item_name
+            state_data["feedback_reason"] = reason
+            await callback.message.answer(t_em(lang, "feedback_ask_details"), parse_mode=ParseMode.HTML)
             try:
-                await query.edit_message_reply_markup(reply_markup=None)
+                await callback.message.edit_reply_markup(reply_markup=None)
             except Exception:
                 pass
             return
 
+        # Язык
         if data.startswith("setlang:"):
-            new_lang = data.split(":", 1)[1]
+            new_lang = data.split(":")[1]
             if new_lang in SUPPORTED_LANGS:
                 state_store.set_user_lang(user_id, new_lang)
                 lang = new_lang
-                await query.answer()
-                await query.edit_message_text(t_em(lang, "settings_saved", lang_name=SUPPORTED_LANGS[new_lang]),
-                                              parse_mode=ParseMode.HTML)
-            else:
-                await query.answer()
+                await callback.message.edit_text(
+                    t_em(lang, "settings_saved", lang_name=SUPPORTED_LANGS[new_lang]),
+                    parse_mode=ParseMode.HTML)
             return
 
+        # Фильтры
         if data.startswith("filt:"):
-            action = data[len("filt:"):]
+            action = data[5:]
             filters_obj = state_store.get_user_filters(user_id)
 
             if action == "ask_min":
-                context.user_data["awaiting_filter_input"] = "min"
-                await query.answer()
-                await query.edit_message_text(t_em(lang, "filters_ask_min"), parse_mode=ParseMode.HTML)
+                state_data["awaiting_filter_input"] = "min"
+                await callback.message.edit_text(t_em(lang, "filters_ask_min"), parse_mode=ParseMode.HTML)
                 return
             if action == "ask_max":
-                context.user_data["awaiting_filter_input"] = "max"
-                await query.answer()
-                await query.edit_message_text(t_em(lang, "filters_ask_max"), parse_mode=ParseMode.HTML)
+                state_data["awaiting_filter_input"] = "max"
+                await callback.message.edit_text(t_em(lang, "filters_ask_max"), parse_mode=ParseMode.HTML)
                 return
             if action == "rarity_menu":
-                await query.answer()
-                await query.edit_message_text(t_em(lang, "filters_rarity_title"), parse_mode=ParseMode.HTML,
-                                              reply_markup=build_rarity_menu_keyboard(lang, filters_obj))
+                await callback.message.edit_text(t_em(lang, "filters_rarity_title"), parse_mode=ParseMode.HTML,
+                                                 reply_markup=build_rarity_menu_keyboard(lang, filters_obj))
                 return
             if action == "stability_menu":
-                await query.answer()
-                await query.edit_message_text(t_em(lang, "filters_stability_title"), parse_mode=ParseMode.HTML,
-                                              reply_markup=build_stability_menu_keyboard(lang, filters_obj))
+                await callback.message.edit_text(t_em(lang, "filters_stability_title"), parse_mode=ParseMode.HTML,
+                                                 reply_markup=build_stability_menu_keyboard(lang, filters_obj))
                 return
             if action.startswith("set_rarity:"):
-                slug = action.split(":", 1)[1]
+                slug = action.split(":")[1]
                 filters_obj.rarity_slug = slug
                 state_store.set_user_filters(user_id, filters_obj)
-                await query.answer(t_em(lang, "filters_saved"))
-                await query.edit_message_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
-                                              reply_markup=build_filters_keyboard(lang, filters_obj))
+                await callback.message.edit_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                                                 reply_markup=build_filters_keyboard(lang, filters_obj))
                 return
             if action.startswith("set_stability:"):
-                key = action.split(":", 1)[1]
+                key = action.split(":")[1]
                 filters_obj.stability_key = key
                 state_store.set_user_filters(user_id, filters_obj)
-                await query.answer(t_em(lang, "filters_saved"))
-                await query.edit_message_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
-                                              reply_markup=build_filters_keyboard(lang, filters_obj))
+                await callback.message.edit_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                                                 reply_markup=build_filters_keyboard(lang, filters_obj))
                 return
             if action == "reset":
                 state_store.reset_user_filters(user_id)
-                context.user_data.pop("awaiting_filter_input", None)
                 filters_obj = state_store.get_user_filters(user_id)
-                await query.answer(t_em(lang, "filters_saved"))
-                await query.edit_message_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
-                                              reply_markup=build_filters_keyboard(lang, filters_obj))
+                await callback.message.edit_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                                                 reply_markup=build_filters_keyboard(lang, filters_obj))
                 return
             if action == "apply":
-                context.user_data.pop("awaiting_filter_input", None)
-                await query.answer(t_em(lang, "filters_applied"))
-                await query.edit_message_text(t_em(lang, "filters_applied"), parse_mode=ParseMode.HTML)
+                state_data.pop("awaiting_filter_input", None)
+                await callback.message.edit_text(t_em(lang, "filters_applied"), parse_mode=ParseMode.HTML)
                 return
             if action == "back":
-                await query.answer()
-                await query.edit_message_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
-                                              reply_markup=build_filters_keyboard(lang, filters_obj))
+                await callback.message.edit_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
+                                                 reply_markup=build_filters_keyboard(lang, filters_obj))
                 return
-            await query.answer()
             return
 
+        # Список
         if data.startswith("list:"):
-            action = data[len("list:"):]
+            action = data[5:]
             if action == "noop":
-                await query.answer()
                 return
             if action.startswith("page:"):
-                page = int(action.split(":", 1)[1])
+                page = int(action.split(":")[1])
                 filters_obj = state_store.get_user_filters(user_id)
                 items = cache.all_items(filters_obj)
                 total_pages = max(1, math.ceil(len(items) / LIST_PAGE_SIZE))
                 page = max(0, min(page, total_pages - 1))
                 text = render_list_page_text(lang, items, page, total_pages)
-                await query.answer()
-                await query.edit_message_text(text, parse_mode=ParseMode.HTML,
-                                              reply_markup=build_list_keyboard(lang, page, total_pages))
+                await callback.message.edit_text(text, parse_mode=ParseMode.HTML,
+                                                 reply_markup=build_list_keyboard(lang, page, total_pages))
                 return
-            await query.answer()
-            return
-
-        await query.answer()
-    except BadRequest as e:
-        logger.warning("BadRequest в callback_query_handler: %s", e)
-        try:
-            await query.answer()
-        except Exception:
-            pass
+    except TelegramBadRequest as e:
+        logger.warning("TelegramBadRequest: %s", e)
     except Exception:
         logger.exception("Ошибка в обработке callback_query")
-        try:
-            await query.answer()
-        except Exception:
-            pass
 
 
 # --------------------------------------------------------------------------- #
-# Инициализация
+# Запуск приложения
 # --------------------------------------------------------------------------- #
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    error = context.error
-    if isinstance(error, Conflict):
-        logger.error("Обнаружен конфликт (Conflict): другой экземпляр бота уже активен.")
-    elif isinstance(error, NetworkError):
-        logger.error("Сетевая ошибка: %s", error)
-    elif isinstance(error, TimedOut):
-        logger.error("Таймаут запроса к Telegram API: %s", error)
+async def on_startup(bot: Bot):
+    # Запускаем health-check сервер в отдельном потоке
+    threading.Thread(target=run_health_check_server, daemon=True).start()
+    logger.info("Health check сервер запущен на порту %d", PORT)
+
+    # Восстановление состояния
+    logger.info("Восстановление состояния из канала-хранилища...")
+    loaded = False
+    try:
+        local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), STATE_FILENAME)
+        if os.path.exists(local_path):
+            with open(local_path, "r", encoding="utf-8") as f:
+                state_store._load_state_dict(json.load(f))
+            logger.info("Состояние загружено из локального файла.")
+            loaded = True
+    except Exception:
+        pass
+    if not loaded:
+        loop = asyncio.get_running_loop()
+        success = await loop.run_in_executor(None, state_store.load_from_channel)
+        if not success:
+            logger.warning("Не удалось загрузить состояние из канала. Продолжаем без него.")
+        else:
+            loaded = True
+    if not loaded or cache.size == 0:
+        logger.info("Запускаем первичный парсинг...")
+        threading.Thread(target=cache.refresh, daemon=True).start()
     else:
-        logger.error("Необработанное исключение при обработке апдейта", exc_info=error)
+        logger.info("Кэш восстановлен: %d предметов.", cache.size)
+
+    state_store.start_debounce_worker()
+
+    # Планировщик обновлений
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(cache.refresh, IntervalTrigger(days=state_store.get_refresh_interval_days()), id="cache_refresh")
+    scheduler.start()
+    bot_data["scheduler"] = scheduler
+
+
+async def on_shutdown(bot: Bot):
+    scheduler = bot_data.get("scheduler")
+    if scheduler:
+        scheduler.shutdown(wait=False)
+    state_store.flush_now()
 
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
@@ -2228,99 +2235,40 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 def run_health_check_server():
     server_address = ("0.0.0.0", PORT)
     httpd = ThreadingHTTPServer(server_address, HealthCheckHandler)
-    logger.info("Health check HTTP-сервер запущен на порту %d", PORT)
     httpd.serve_forever()
-
-
-def reset_webhook_and_cleanup():
-    try:
-        resp = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook", timeout=20)
-        if resp.status_code == 200:
-            logger.info("Вебхук успешно удалён")
-        else:
-            logger.warning("Не удалось удалить вебхук: %s", resp.text)
-        resp = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset=-1&timeout=1", timeout=20)
-        if resp.status_code == 200:
-            logger.info("Pending updates очищены")
-        else:
-            logger.warning("Не удалось очистить pending updates: %s", resp.text)
-    except Exception as e:
-        logger.error("Ошибка при очистке вебхука: %s", e)
 
 
 if __name__ == "__main__":
     ensure_fonts_downloaded()
-
-    logger.info("Очистка вебхука и pending updates...")
+    # Очистка вебхука перед стартом
     reset_webhook_and_cleanup()
 
-    threading.Thread(target=run_health_check_server, daemon=True).start()
-    logger.info("Health check HTTP-сервер запущен на порту %d", PORT)
+    bot_data = {}  # shared data between handlers and on_startup
 
-    logger.info("Восстановление состояния из канала-хранилища...")
-    loaded = False
-    try:
-        local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), STATE_FILENAME)
-        if os.path.exists(local_path):
-            with open(local_path, "r", encoding="utf-8") as f:
-                state_store._load_state_dict(json.load(f))
-            logger.info("Состояние загружено из локального файла.")
-            loaded = True
-    except Exception:
-        pass
-    if not loaded:
-        load_thread = threading.Thread(
-            target=lambda: setattr(sys.modules[__name__], '_channel_loaded', state_store.load_from_channel()),
-            daemon=True)
-        _channel_loaded = False
-        load_thread.start()
-        load_thread.join(timeout=15)
-        if not _channel_loaded:
-            logger.warning("Загрузка из канала зависла или не удалась. Продолжаем без состояния.")
-        else:
-            loaded = True
-    if not loaded or cache.size == 0:
-        logger.info("Запускаем первичный парсинг...")
-        threading.Thread(target=cache.refresh, daemon=True).start()
-    else:
-        logger.info("Кэш восстановлен: %d предметов.", cache.size)
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
 
-    state_store.start_debounce_worker()
+    # Для хранения временных данных пользователя используем middleware или хранилище
+    # Реализуем простую память в боте через функцию get_state()
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.memory import MemoryStorage
 
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(cache.refresh, "interval", days=state_store.get_refresh_interval_days(), id="cache_refresh")
-    scheduler.start()
+    storage = MemoryStorage()
+    dp = Dispatcher(storage=storage)
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+    dp.message.register(start_cmd, Command("start"))
+    dp.message.register(help_cmd, Command("help"))
+    dp.message.register(settings_cmd, Command("settings"))
+    dp.message.register(status_cmd, Command("status"))
+    dp.message.register(setrefresh_cmd, Command("setrefresh"))
+    dp.message.register(togglepremium_cmd, Command("togglepremium"))
+    dp.message.register(filters_cmd, Command("filters"))
+    dp.message.register(list_cmd, Command("list"))
+    dp.message.register(force_refresh_cmd, Command("refresh12345"))
+    dp.message.register(cancel_cmd, Command("cancel"))
+    dp.message.register(handle_text, F.text)
+    dp.callback_query.register(callback_handler)
 
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.bot_data["scheduler"] = scheduler
-
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("settings", settings_command))
-    application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(CommandHandler("setrefresh", setrefresh_command))
-    application.add_handler(CommandHandler("filters", filters_command))
-    application.add_handler(CommandHandler("list", list_command))
-    application.add_handler(CommandHandler("refresh12345", force_refresh_command))
-    application.add_handler(CommandHandler("cancel", cancel_command))
-    application.add_handler(CommandHandler("togglepremium", togglepremium_command))
-
-    application.add_handler(CallbackQueryHandler(callback_query_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_text_message))
-    application.add_error_handler(error_handler)
-
-    def signal_handler(signum, frame):
-        logger.info("Получен сигнал завершения (%s), сохраняю состояние...", signum)
-        try:
-            state_store.flush_now()
-        except Exception:
-            logger.exception("Не удалось сохранить состояние при завершении")
-        if scheduler.running:
-            scheduler.shutdown(wait=False)
-        sys.exit(0)
-
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
-
-    logger.info("Запуск Telegram бота (polling)...")
-    application.run_polling(drop_pending_updates=True)
+    asyncio.run(dp.start_polling(bot, bot_data=bot_data))
