@@ -85,7 +85,6 @@ logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 try:
     from deep_translator import GoogleTranslator
-
     TRANSLATOR_AVAILABLE = True
 except ImportError:
     TRANSLATOR_AVAILABLE = False
@@ -110,9 +109,9 @@ PREMIUM = {
     "chart_up": 5244837092042750681,
     "chart_down": 5246762912428603768,
     "gift": 5192879906295397710,
-    "left": 5237971019884410850,
-    "right": 5240271460202722955,
-    "star": 5325547803936572038,
+    "left": 5332716632634579071,
+    "right": 5332774511613859175,
+    "star": 5461151367559141950,
     "fire": 5424972470023104089,
     "info": 5334544901428229844,
     "refresh": 5375338737028841420,
@@ -123,10 +122,10 @@ PREMIUM = {
     "plus": 5397916757333654639,
     "diamond": 5427168083074628963,
     "trash": 5445267414562389170,
-    "rainbow": 5296369303661067030,
-    "settings": 5409109841538994759,
-    "loading": 5305265301917549162,
-    "bulb": 5386367538735104399,
+    "rainbow": 5409109841538994759,
+    "settings": 5341715473882955310,
+    "loading": 5386367538735104399,
+    "bulb": 5422439311196834318,
     "pencil": 5406756500108501710,
     "red_flag": 5395444784611480792,
     "party": 5416041192905265756,
@@ -136,7 +135,7 @@ PREMIUM = {
     "new": 5382357040008021292,
     "soon": 5440621591387980068,
     "free": 5422439311196834318,
-    "lock": 5222444124698853913,
+    "lock": 5296369303661067030,
 }
 
 FALLBACK_EMOJI = {
@@ -207,11 +206,12 @@ def emoji(name: str) -> str:
     return FALLBACK_EMOJI.get(name, f"[{name}]")
 
 
-def icon_id(name: str) -> Optional[int]:
+def icon_id(name: str) -> Optional[str]:
+    """Возвращает ID эмодзи как строку для icon_custom_emoji_id."""
     if use_premium():
         eid = PREMIUM.get(name)
         if eid:
-            return int(eid)
+            return str(eid)
     return None
 
 
@@ -534,7 +534,7 @@ def get_ru_name(name_en: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Парсинг (краткая версия, полная функция fetch_category и fetch_all_items)
+# Парсинг (полная версия fetch_category и fetch_all_items)
 # --------------------------------------------------------------------------- #
 
 STABILITY_MAP_RU = {
@@ -1684,7 +1684,7 @@ def make_button(text: str, callback_data: str, icon_name: str = None, style: str
     if use_premium() and icon_name:
         eid = icon_id(icon_name)
         if eid is not None:
-            kwargs["icon_custom_emoji_id"] = int(eid)
+            kwargs["icon_custom_emoji_id"] = str(eid)  # обязательно строка
     if style:
         kwargs["style"] = style
     return InlineKeyboardButton(**kwargs)
