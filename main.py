@@ -86,13 +86,36 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext.Application").setLevel(logging.WARNING)
 
-# Попробуем импортировать переводчик
 try:
     from deep_translator import GoogleTranslator
     TRANSLATOR_AVAILABLE = True
 except ImportError:
     TRANSLATOR_AVAILABLE = False
     logger.warning("deep-translator не установлен. Перевод будет использовать встроенный словарь.")
+
+# --------------------------------------------------------------------------- #
+# Премиум‑эмодзи для плашек редкости
+# --------------------------------------------------------------------------- #
+
+PLATE_EMOJI_IDS: dict[str, tuple[int, int, int]] = {
+    "godlies":    (5424896822764152247, 5424710739011084749, 5424601088496020066),
+    "ancients":   (5424809669287782271, 5424947511968182015, 5422360356813053692),
+    "rares":      (5424637106091763719, 5424968492883423047, 5424736341311139342),
+    "uncommons":  (5424827648020880967, 5425146089781109016, 5424852906723549420),
+    "commons":    (5425061148212897338, 5422488024715927278, 5424705030999548016),
+    "chromas":    (5424594066224496687, 5424594268087953477, 5424693267084126572),
+    "legendaries":(5424716103425237337, 5424782550864274577, 5425120646394851617),
+    "vintages":   (5424932062970817364, 5424601324719219065, 5424800460877896182),
+}
+
+def rarity_plate_html(slug: str) -> str:
+    """Возвращает HTML‑строку из трёх премиум‑эмодзи для указанной редкости."""
+    ids = PLATE_EMOJI_IDS.get(slug)
+    if not ids:
+        # fallback – старый значок
+        return f"{RARITY_EMOJI.get(slug, '❓')}"
+    parts = [f'<tg-emoji emoji-id="{eid}">⬜</tg-emoji>' for eid in ids]
+    return "".join(parts)
 
 # --------------------------------------------------------------------------- #
 # Модель данных предмета
@@ -145,7 +168,7 @@ class Item:
         )
 
 # --------------------------------------------------------------------------- #
-# Нормализация и перевод
+# Нормализация
 # --------------------------------------------------------------------------- #
 
 CYR_TO_LAT = {
@@ -176,7 +199,6 @@ def normalize_text(text: str) -> str:
     return " ".join(text.split())
 
 def token_sorted_text(text: str) -> str:
-    """Возвращает отсортированные по алфавиту слова без знаков препинания."""
     words = sorted(re.findall(r"[a-zа-я0-9]+", strip_accents(text.lower())))
     return " ".join(words)
 
@@ -205,76 +227,203 @@ def generate_query_variants(raw_query: str) -> list[str]:
     return list(variants)
 
 # --------------------------------------------------------------------------- #
-# Автоматический перевод названий (Google Translate + кэш)
+# Перевод (словарь + авто‑разбор + опциональный Google)
 # --------------------------------------------------------------------------- #
 
-# Встроенные переводы для игровых жаргонных терминов
-HARDCODED_RU_OVERRIDES: dict[str, str] = {
-    "icewing": "Ледокрыло",
-    "icebreaker": "Ледокол",
-    "icepiercer": "Ледопронзатель",
-    "chroma traveler's gun": "Хрома пистолет путешественника",
-    "traveler's gun": "Пистолет путешественника",
-    "elderwood scythe": "Коса Элдервуд",
-    "candleflame": "Пламя свечи",
-    "harvester": "Жнец",
-    "batwing": "Летучее крыло",
-    "makeshift": "Временный",
-    "corrupt": "Порча",
+ROOT_TRANSLATIONS: dict[str, str] = {
+    "gun": "Пистолет", "revolver": "Револьвер", "blaster": "Бластер",
+    "beam": "Луч", "cannon": "Пушка", "shot": "Выстрел", "raygun": "Лучемёт",
+    "blade": "Лезвие", "knife": "Нож", "sword": "Меч", "dagger": "Кинжал",
+    "axe": "Топор", "battleaxe": "Боевой топор", "scythe": "Коса",
+    "edge": "Грань", "shard": "Осколок", "saw": "Пила", "handsaw": "Ножовка",
+    "cane": "Трость", "wand": "Жезл", "luger": "Люгер", "sabre": "Сабля",
+    "saber": "Сабля", "spear": "Копьё", "claw": "Коготь", "fang": "Клык",
+    "chopper": "Тесак", "cleaver": "Тесак", "crusher": "Дробитель",
+    "breaker": "Ледокол", "piercer": "Пронзатель", "slasher": "Потрошитель",
+    "phaser": "Фазер", "laser": "Лазер", "harvester": "Жнец",
+    "wing": "Крыло",
+    "ice": "Лёд", "icewing": "Ледокрыло",
+    "fire": "Огонь", "flame": "Пламя", "frost": "Мороз", "snow": "Снег",
+    "winter": "Зима", "chill": "Холод", "midnight": "Полночь",
+    "shadow": "Тень", "void": "Пустота", "corrupt": "Порча",
+    "light": "Светлый", "dark": "Тёмный", "bright": "Яркий",
+    "star": "Звезда", "galaxy": "Галактика", "comet": "Комета",
+    "nebula": "Туманность", "cosmic": "Космический",
+    "crystal": "Кристалл", "pearl": "Жемчуг",
+    "rainbow": "Радуга", "pixel": "Пиксель", "virtual": "Виртуальный",
+    "plasma": "Плазма", "bio": "Био", "electric": "Электрический",
+    "ghost": "Призрак", "phantom": "Фантом", "soul": "Душа",
+    "bone": "Костяной", "blood": "Кровавый", "death": "Смерть",
+    "night": "Ночной", "dawn": "Рассвет", "sunset": "Закат", "moon": "Луна",
+    "eternal": "Вечный", "evergreen": "Вечнозелёный", "clockwork": "Заводной",
+    "makeshift": "Временный", "swirly": "Спиральный", "elderwood": "Элдервуд",
+    "logchopper": "Лесоруб", "hallow": "Хэллоуин", "xmas": "Рождество",
+    "candy": "Леденец", "candleflame": "Пламя свечи", "ginger": "Имбирный",
+    "cookie": "Печенье", "sugar": "Сахар", "minty": "Мятный",
+    "egg": "Яйцо", "bat": "Бита", "batwing": "Летучее крыло", "spider": "Паук",
+    "shark": "Акула", "dragon": "Дракон", "wolf": "Волк", "cat": "Кот",
+    "bunny": "Кролик", "bear": "Медведь", "fox": "Лис", "phoenix": "Феникс",
+    "seer": "Провидец", "tides": "Приливы", "ocean": "Океан",
+    "flora": "Флора", "bloom": "Расцвет", "sakura": "Сакура",
+    "borealis": "Северное сияние", "australis": "Южное сияние",
+    "america": "Америка", "amerilaser": "Америлазер",
+    "golden": "Золотой", "silver": "Серебро",
+    "chroma": "Хрома", "c.": "Хрома",
+    "red": "Красный", "blue": "Синий", "green": "Зелёный",
+    "purple": "Фиолетовый", "orange": "Оранжевый", "yellow": "Жёлтый",
+    "white": "Белый", "black": "Чёрный", "pink": "Розовый",
+    "traveler": "Путешественник", "traveler's": "Путешественника",
+    "heart": "Сердце", "cowboy": "Ковбой", "latte": "Латте",
+    "cavern": "Пещера", "beach": "Пляж", "broken": "Сломанный",
+    "splitter": "Разделитель", "harvest": "Урожай",
 }
 
-# Дополнительные жаргонные синонимы (ключ – нормализованное английское название, значения – русские варианты)
+COMPOUND_SUFFIXES: list[str] = [
+    "battleaxe", "raygun", "handsaw", "logchopper",
+    "blade", "blaster", "shard", "cane", "beam", "wing", "gun",
+    "axe", "saw", "flake",
+]
+
+MERGED_COMPOUND_OVERRIDES: dict[str, str] = {
+    "icewing": "Ледокрыло",
+    "icebreaker": "Ледокол",
+    "icecrusher": "Ледокрушитель",
+    "icepiercer": "Ледопронзатель",
+    "iceblaster": "Ледяной бластер",
+    "icebeam": "Ледяной луч",
+    "darkshot": "Тёмный выстрел",
+    "darksword": "Тёмный меч",
+    "darkbringer": "Несущий тьму",
+    "lightbringer": "Несущий свет",
+    "watergun": "Водный пистолет",
+    "snowcannon": "Снежная пушка",
+    "lugercane": "Трость-Люгер",
+    "gingerluger": "Имбирный Люгер",
+    "hallowgun": "Хэллоу-пистолет",
+    "hallowscythe": "Коса Хэллоуина",
+    "plasmabeam": "Плазменный луч",
+    "plasmablade": "Плазменное лезвие",
+    "bioblade": "Биолезвие",
+    "frostsaber": "Морозная сабля",
+    "gingerblade": "Имбирное лезвие",
+    "boneblade": "Костяное лезвие",
+    "ghostblade": "Лезвие призрака",
+    "nightblade": "Ночное лезвие",
+    "eggblade": "Лезвие-яйцо",
+    "cookieblade": "Лезвие-печенье",
+    "cookiecane": "Печенье-трость",
+    "swirlyblade": "Крутящийся клинок",
+    "swirlygun": "Спиральный пистолет",
+    "hallowblade": "Клинок Хэллоуина",
+    "hallowsblade": "Клинок Хэллоуина",
+    "elderwoodscythe": "Коса Элдервуд",
+    "eternalcane": "Вечная трость",
+    "batwing": "Летучее крыло",
+    "makeshift": "Временный",
+}
+
 ITEM_ALIASES: dict[str, list[str]] = {
     "icewing": ["ледокрыло", "ледяное крыло", "айсвинг"],
     "icebreaker": ["ледокол", "айсбрекер"],
     "icepiercer": ["ледопронзатель", "айспирсер"],
-    "chroma traveler's gun": ["хрома пистолет путешественника", "хрома тревелерс ган", "хрома путешественника пистолет"],
-    "traveler's gun": ["пистолет путешественника", "тревелер ган", "путешественника пистолет"],
+    "chroma traveler's gun": ["хрома пистолет путешественника", "хрома тревелерс ган"],
+    "traveler's gun": ["пистолет путешественника", "тревелер ган"],
     "elderwood scythe": ["коса элдервуд", "элдервуд коса"],
     "candleflame": ["пламя свечи", "кэндлфлейм"],
     "harvester": ["жнец", "харвестер"],
     "batwing": ["летучее крыло", "батвинг", "крыло летучей мыши"],
     "makeshift": ["временный", "самоделка", "самодельный"],
     "corrupt": ["коррупт", "порча"],
-    "swirly blade": ["крутящийся клинок"],
+    "swirly blade": ["крутящийся клинок", "спиральный клинок"],
     "swirly gun": ["спиральный пистолет"],
-    "luger cane": ["трость люгер", "люгер трость"],
+    "luger cane": ["трость люгер", "люгер трость", "трость-люгер"],
     "ginger luger": ["имбирный люгер"],
     "hallow's blade": ["клинок хэллоуина", "хэллоуинский клинок"],
 }
 
-def _translate_via_google(text_en: str) -> Optional[str]:
-    """Перевод с помощью Google Translate (требуется deep-translator). Возвращает None при ошибке."""
+def _normalize_apostrophe(text: str) -> str:
+    return text.replace("’", "'")
+
+def _split_compound_word(word: str) -> list[str]:
+    lower = word.lower()
+    for suffix in COMPOUND_SUFFIXES:
+        if lower.endswith(suffix) and len(lower) > len(suffix):
+            head = word[: len(word) - len(suffix)]
+            return [head, suffix]
+    return [word]
+
+def _translate_token(token: str) -> str:
+    normalized = _normalize_apostrophe(token).lower().strip(".,()")
+    if normalized in ROOT_TRANSLATIONS:
+        return ROOT_TRANSLATIONS[normalized]
+    if normalized.endswith("'s"):
+        base = normalized[:-2]
+        if base in ROOT_TRANSLATIONS:
+            return ROOT_TRANSLATIONS[base]
+    return token
+
+def auto_translate_ru(name_en: str) -> str:
+    raw_words = name_en.split()
+    translated_parts: list[str] = []
+    i = 0
+    n = len(raw_words)
+    while i < n:
+        raw_word = raw_words[i]
+        stripped = raw_word.strip(".,()")
+        if i + 1 < n:
+            next_stripped = raw_words[i + 1].strip(".,()")
+            two_word_key = f"{_normalize_apostrophe(stripped).lower()} {_normalize_apostrophe(next_stripped).lower()}"
+            if two_word_key in MERGED_COMPOUND_OVERRIDES:
+                translated_parts.append(MERGED_COMPOUND_OVERRIDES[two_word_key])
+                i += 2
+                continue
+            if two_word_key in ROOT_TRANSLATIONS:
+                translated_parts.append(ROOT_TRANSLATIONS[two_word_key])
+                i += 2
+                continue
+        merged_key = _normalize_apostrophe(stripped).lower()
+        if merged_key in MERGED_COMPOUND_OVERRIDES:
+            translated_parts.append(MERGED_COMPOUND_OVERRIDES[merged_key])
+            i += 1
+            continue
+        direct = _translate_token(stripped)
+        if direct != stripped:
+            translated_parts.append(direct)
+            i += 1
+            continue
+        pieces = _split_compound_word(stripped)
+        if len(pieces) > 1:
+            translated_parts.append(" ".join(_translate_token(p) for p in pieces))
+        else:
+            translated_parts.append(raw_word)
+        i += 1
+    return " ".join(translated_parts)
+
+def _google_translate(text_en: str) -> Optional[str]:
     if not TRANSLATOR_AVAILABLE:
         return None
     try:
-        # ограничим частоту запросов
         translator = GoogleTranslator(source='auto', target='ru')
-        result = translator.translate(text_en)
-        if result and isinstance(result, str):
-            return result.strip()
+        return translator.translate(text_en).strip()
     except Exception as e:
-        logger.warning("Ошибка перевода через Google: %s", e)
-    return None
+        logger.warning("Google Translate ошибка для '%s': %s", text_en, e)
+        return None
 
 def get_ru_name(name_en: str) -> str:
-    """Возвращает русское название предмета, используя кэш, ручные оверрайды и Google Translate."""
     key = name_en.lower().strip()
-    # Сначала проверим жёсткие переопределения
-    if key in HARDCODED_RU_OVERRIDES:
-        return HARDCODED_RU_OVERRIDES[key]
-    # Затем кэш переводов
+    if key in MERGED_COMPOUND_OVERRIDES:
+        return MERGED_COMPOUND_OVERRIDES[key]
     cached = state_store.get_translation(name_en)
     if cached:
         return cached
-    # Попробуем перевести через Google
-    translated = _translate_via_google(name_en)
-    if translated:
-        # Проверка, что перевод не совпадает с оригиналом (не переведено)
-        if translated.lower() != name_en.lower():
-            state_store.save_translation(name_en, translated)
-            return translated
-    # Если ничего не получилось, вернём оригинал
+    auto = auto_translate_ru(name_en)
+    if normalize_text(auto) != normalize_text(name_en):
+        state_store.save_translation(name_en, auto)
+        return auto
+    gtrans = _google_translate(name_en)
+    if gtrans and normalize_text(gtrans) != normalize_text(name_en):
+        state_store.save_translation(name_en, gtrans)
+        return gtrans
     return name_en
 
 # --------------------------------------------------------------------------- #
@@ -335,10 +484,7 @@ def _strip_name_tags(name: str) -> str:
     return _BRACKET_TAG_RE.sub(" ", name).strip()
 
 def guess_image_filenames(display_name: str) -> list[str]:
-    """Генерирует варианты имён файлов изображений для предмета."""
-    clean = _strip_name_tags(display_name)
-    clean = clean.replace("’", "'")
-
+    clean = _strip_name_tags(display_name).replace("’", "'")
     is_chroma = False
     words = clean.split()
     if words and words[0].lower() in ("chroma", "c.", "c"):
@@ -346,73 +492,45 @@ def guess_image_filenames(display_name: str) -> list[str]:
         words = words[1:]
     if not words:
         words = clean.split()
-
     def _clean_word(w: str) -> str:
         w = re.sub(r"[^\w']", "", w)
         if w.lower().endswith("'s"):
             w = w[:-2]
         return w
-
     plain_words = [_clean_word(w) for w in words if _clean_word(w)]
     plain_words = [w for w in plain_words if w.lower() not in _IMG_STOPWORDS]
     if not plain_words:
         fallback_word = re.sub(r"[^\w]", "", clean)
         plain_words = [fallback_word] if fallback_word else []
-
     prefix = "C" if is_chroma else ""
     candidates: list[str] = []
-
     def add(name: str):
         if name and name not in candidates:
             candidates.append(name)
-
     joined_nospace = "".join(plain_words)
     joined_underscore = "_".join(plain_words)
-    joined_dash = "-".join(plain_words)
-
     first_word = plain_words[0] if plain_words else ""
     last_word = plain_words[-1] if plain_words else ""
-
-    # Варианты с префиксом Chroma
     add(prefix + joined_nospace)
     add(prefix + joined_underscore)
-    add(prefix + joined_dash)
     add(prefix + last_word)
     add(prefix + first_word)
-    if len(plain_words) >= 2:
-        initials = "".join(w[0].upper() for w in plain_words if w)
-        add(prefix + initials)
-
-    # Без префикса
     add(joined_nospace)
     add(joined_underscore)
-    add(joined_dash)
     add(last_word)
     add(first_word)
-    add(joined_nospace.lower())
-    add(joined_underscore.lower())
-
-    # Ещё несколько эвристик
-    for cut in (6, 5, 4, 3):
-        if len(plain_words[0]) > cut:
-            add(prefix + plain_words[0][:cut])
-
     safe_name = re.sub(r"[^\w\s-]", "", clean).strip().replace(" ", "_")
     add(safe_name)
-    add(safe_name.replace("_", ""))
-
     return [c for c in candidates if c]
 
 def fetch_category(slug: str, rarity_label: str) -> list[Item]:
     target_url = f"{BASE_URL}/mm2/{slug}"
     api_url = f"https://api.scrapingant.com/v2/general?url={target_url}&x-api-key={SCRAPINGANT_API_KEY}&browser=true"
-
     request_headers = {
         "User-Agent": "Mozilla/5.0 (compatible; MM2ValuesBot/1.0)",
         "Accept": "application/json",
         "Connection": "close",
     }
-
     last_error = None
     resp = None
     for attempt in range(1, MAX_RETRIES + 1):
@@ -437,7 +555,6 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
         except Exception:
             logger.exception("Неизвестная ошибка при запросе '%s'", slug)
             last_error = "Unknown"
-
         if attempt < MAX_RETRIES:
             delay = RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(1, 3)
             logger.info("Ожидание %.1f сек. перед повторной попыткой...", delay)
@@ -446,15 +563,12 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
         raise RuntimeError(
             f"Не удалось загрузить категорию '{slug}' после {MAX_RETRIES} попыток (последняя ошибка: {last_error})"
         )
-
     soup = BeautifulSoup(resp.text, "html.parser")
     items: list[Item] = []
     seen_names: set[str] = set()
-
     cards = soup.find_all("div", class_="itemcolumn")
     if not cards:
         cards = soup.find_all("tr")
-
     for card in cards:
         btn_tag = card.find("button")
         display_name = ""
@@ -464,21 +578,17 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
             head_tag = card.find("div", class_="itemhead")
             if head_tag:
                 display_name = head_tag.get_text(strip=True)
-
         if not display_name:
             display_name = card.get("data-name", "").strip()
-
         if not display_name:
             img_probe = card.find("img")
             if img_probe:
                 display_name = (img_probe.get("alt") or img_probe.get("title") or "").strip()
-
         if not display_name or display_name.lower() == "n/a":
             continue
         if display_name.lower() in seen_names:
             continue
         seen_names.add(display_name.lower())
-
         val_tag = card.find("b", class_="itemvalue")
         if val_tag:
             value_raw = val_tag.get_text(strip=True)
@@ -489,17 +599,14 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
                 m = re.search(r"Value\s*-\s*([\d,]+)", text_blob)
                 if m:
                     value_raw = m.group(1)
-
         value_int = _parse_value_to_int(value_raw)
         value_display = value_raw if value_int is None else f"{value_int:,}".replace(",", " ")
-
         stability = card.get("data-stability", "") or "Unknown"
         if stability == "Unknown":
             text_blob = card.get_text(" ", strip=True)
             m = re.search(r"Stability\s*-\s*([A-Za-z ]+?)(?:\s{2,}|Demand|$)", text_blob)
             if m:
                 stability = m.group(1).strip()
-
         image_candidates: list[str] = []
         img_tag = card.find("img", class_="itemimage") or card.find("img")
         if img_tag:
@@ -509,37 +616,30 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
                     normalized = _normalize_image_src(raw_src)
                     if normalized and normalized not in image_candidates:
                         image_candidates.append(normalized)
-
         media_dir = f"{BASE_URL}/media/mm2{slug}/"
         for guess in guess_image_filenames(display_name):
             candidate = f"{media_dir}{guess}.png"
             if candidate not in image_candidates:
                 image_candidates.append(candidate)
-
         image_url = image_candidates[0] if image_candidates else ""
-
         origin = card.get("data-event", "")
         if not origin:
             text_blob = card.get_text(" ", strip=True)
             m = re.search(r"Origin\s*-\s*(.+?)(?:\s{2,}|Last Change|$)", text_blob)
             if m:
                 origin = m.group(1).strip()
-
-        items.append(
-            Item(
-                name=display_name,
-                category_slug=slug,
-                rarity=rarity_label,
-                value=value_int,
-                value_display=value_display,
-                ranged_value=None,
-                stability=stability,
-                image_url=image_url,
-                image_url_candidates=image_candidates,
-                origin=origin,
-            )
-        )
-
+        items.append(Item(
+            name=display_name,
+            category_slug=slug,
+            rarity=rarity_label,
+            value=value_int,
+            value_display=value_display,
+            ranged_value=None,
+            stability=stability,
+            image_url=image_url,
+            image_url_candidates=image_candidates,
+            origin=origin,
+        ))
     return items
 
 def fetch_all_items() -> list[Item]:
@@ -563,8 +663,6 @@ class SearchEntry:
     key_norm: str
     key_sorted: str
     item_idx: int
-    # Добавим множество нормализованных токенов для фильтрации
-    tokens: set[str]
 
 class ValuesCache:
     def __init__(self) -> None:
@@ -578,28 +676,19 @@ class ValuesCache:
         index: list[SearchEntry] = []
         for idx, item in enumerate(items):
             keys_to_add: set[str] = set()
-
-            # 1. Оригинальное название (EN)
             keys_to_add.add(item.name)
-
-            # 2. Переведенное название (RU)
             ru_name = get_ru_name(item.name)
             if ru_name:
                 keys_to_add.add(ru_name)
-
-            # 3. Ручные алиасы и синонимы
             item_key_lower = item.name.lower().strip()
             if item_key_lower in ITEM_ALIASES:
                 for alias in ITEM_ALIASES[item_key_lower]:
                     keys_to_add.add(alias)
-
             for key in keys_to_add:
                 k_norm = normalize_text(key)
                 k_sorted = token_sorted_text(key)
-                tokens = set(k_norm.split())
                 if k_norm:
-                    index.append(SearchEntry(key_norm=k_norm, key_sorted=k_sorted, item_idx=idx, tokens=tokens))
-
+                    index.append(SearchEntry(key_norm=k_norm, key_sorted=k_sorted, item_idx=idx))
         return index
 
     def refresh(self) -> None:
@@ -635,77 +724,48 @@ class ValuesCache:
             index = list(self._search_index)
         if not items or not index:
             return []
-
         variants = generate_query_variants(query)
         if not variants:
             return []
-
         allowed_idx: Optional[set[int]] = None
         if filters is not None and not filters.is_empty:
             allowed_idx = {i for i, it in enumerate(items) if filters.matches(it)}
             if not allowed_idx:
                 return []
-
         best_by_idx: dict[int, float] = {}
         CHROMA_WORDS = {"chroma", "хрома", "c"}
-
         def _has_chroma_word(norm_text: str) -> bool:
             tokens = norm_text.split()
             return bool(tokens) and tokens[0] in CHROMA_WORDS
-
         for variant in variants:
             v_norm = normalize_text(variant)
             v_sorted = token_sorted_text(variant)
             if not v_norm:
                 continue
-
-            v_tokens = set(v_norm.split())
             query_has_chroma = _has_chroma_word(v_norm)
-
             for entry in index:
                 if allowed_idx is not None and entry.item_idx not in allowed_idx:
                     continue
-
-                # Базовая оценка покрытия токенов: доля токенов запроса, присутствующих в названии
-                token_intersection = len(v_tokens & entry.tokens)
-                token_coverage = token_intersection / len(v_tokens) if v_tokens else 0.0
-
-                # Если ни один токен не совпал – низкий приоритет
-                if token_coverage == 0.0:
-                    continue
-
-                score = 0.0
-
-                if v_norm == entry.key_norm or v_sorted == entry.key_sorted:
-                    score = 100.0
-                else:
-                    s1 = fuzz.token_sort_ratio(v_norm, entry.key_norm)
-                    s2 = fuzz.token_set_ratio(v_norm, entry.key_norm)
-                    s3 = fuzz.ratio(v_sorted, entry.key_sorted)
-                    score = max(s1, s2, s3)
-
-                    len_diff = abs(len(v_norm) - len(entry.key_norm))
-                    if len_diff > 3 and score < 95.0:
-                        score = max(0.0, score - len_diff * 3.0)
-
-                # Штраф за несовпадение Chroma
+                s1 = fuzz.token_sort_ratio(v_norm, entry.key_norm)
+                s2 = fuzz.token_set_ratio(v_norm, entry.key_norm)
+                s3 = fuzz.ratio(v_sorted, entry.key_sorted)
+                score = max(s1, s2, s3)
+                len_diff = abs(len(v_norm) - len(entry.key_norm))
+                if len_diff > 3 and score < 95.0:
+                    score = max(0.0, score - len_diff * 3.0)
                 entry_has_chroma = _has_chroma_word(entry.key_norm)
                 if query_has_chroma != entry_has_chroma:
                     score = max(0.0, score - 40.0)
                 elif query_has_chroma and entry_has_chroma:
                     score = min(100.0, score + 5.0)
-
-                # Умножаем на покрытие токенов (чем больше слов запроса присутствует, тем выше)
-                score *= token_coverage
-
+                if s2 >= 100.0:
+                    score = min(100.0, score + 15.0)
                 if score > best_by_idx.get(entry.item_idx, -1):
                     best_by_idx[entry.item_idx] = float(score)
-
         if not best_by_idx:
             return []
-
         ranked = sorted(best_by_idx.items(), key=lambda kv: kv[1], reverse=True)
-        THRESHOLD = 55.0
+        THRESHOLD = 58.0
         result: list[tuple[Item, float]] = []
         for idx, score in ranked:
             if score < THRESHOLD:
@@ -797,14 +857,11 @@ class ItemFilters:
         else:
             if self.min_value > 0 or self.max_value != -1:
                 return False
-
         if self.rarity_slug != "all" and item.category_slug != self.rarity_slug:
             return False
-
         if self.stability_key != "all":
             if normalize_text(item.stability) != normalize_text(self.stability_key):
                 return False
-
         return True
 
     def to_dict(self) -> dict:
@@ -826,22 +883,13 @@ class ItemFilters:
 
 
 class StateStore:
-    """
-    Единое хранилище всех настроек бота (кроме кэша предметов, который живёт
-    в ValuesCache) — язык пользователей, фильтры пользователей, интервал
-    обновления и подтверждённые URL картинок. Периодически сериализуется в
-    JSON и сохраняется документом в приватном Telegram-канале (CHANNEL_ID),
-    откуда же восстанавливается при старте процесса.
-    """
-
     def __init__(self, channel_id: int) -> None:
         self.channel_id = channel_id
         self._lock = threading.Lock()
-
         self.user_langs: dict[str, str] = {}
         self.user_filters: dict[str, dict] = {}
         self.known_images: dict[str, str] = {}
-        self.translations: dict[str, str] = {}  # кэш английский -> русский
+        self.translations: dict[str, str] = {}
         self.refresh_interval_days: int = DEFAULT_REFRESH_DAYS
 
         self._dirty_event = threading.Event()
@@ -870,22 +918,12 @@ class StateStore:
     def _load_state_dict(self, data: dict) -> None:
         settings = data.get("settings", {}) or {}
         cache_info = data.get("cache", {}) or {}
-
         with self._lock:
-            self.refresh_interval_days = int(
-                settings.get("refresh_interval_days", DEFAULT_REFRESH_DAYS)
-            )
+            self.refresh_interval_days = int(settings.get("refresh_interval_days", DEFAULT_REFRESH_DAYS))
             self.user_langs = {str(k): v for k, v in (settings.get("user_langs", {}) or {}).items()}
-            self.user_filters = {
-                str(k): dict(v) for k, v in (settings.get("user_filters", {}) or {}).items()
-            }
-            self.known_images = {
-                str(k): str(v) for k, v in (settings.get("known_images", {}) or {}).items()
-            }
-            self.translations = {
-                str(k): str(v) for k, v in (settings.get("translations", {}) or {}).items()
-            }
-
+            self.user_filters = {str(k): dict(v) for k, v in (settings.get("user_filters", {}) or {}).items()}
+            self.known_images = {str(k): str(v) for k, v in (settings.get("known_images", {}) or {}).items()}
+            self.translations = {str(k): str(v) for k, v in (settings.get("translations", {}) or {}).items()}
         raw_items = cache_info.get("items")
         if raw_items:
             cache.load_items(raw_items)
@@ -896,73 +934,49 @@ class StateStore:
     def load_from_channel(self) -> bool:
         api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
         try:
-            resp = requests.get(
-                f"{api_base}/getChat",
-                params={"chat_id": self.channel_id},
-                timeout=20,
-            )
+            resp = requests.get(f"{api_base}/getChat", params={"chat_id": self.channel_id}, timeout=10)
             resp.raise_for_status()
             chat_data = resp.json()
         except Exception:
             logger.exception("Не удалось получить getChat для канала-хранилища")
             return False
-
         if not chat_data.get("ok"):
-            logger.error("getChat вернул ошибку: %s", chat_data)
             return False
-
         pinned = chat_data.get("result", {}).get("pinned_message")
         if not pinned:
             logger.info("В канале-хранилище пока нет закреплённого снапшота.")
             return False
-
         document = pinned.get("document")
         if not document:
-            logger.warning("Закреплённое сообщение канала не содержит документа.")
             return False
-
         file_id = document.get("file_id")
         if not file_id:
             return False
-
         try:
-            file_resp = requests.get(
-                f"{api_base}/getFile",
-                params={"file_id": file_id},
-                timeout=20,
-            )
+            file_resp = requests.get(f"{api_base}/getFile", params={"file_id": file_id}, timeout=10)
             file_resp.raise_for_status()
             file_data = file_resp.json()
             if not file_data.get("ok"):
-                logger.error("getFile вернул ошибку: %s", file_data)
                 return False
             file_path = file_data["result"]["file_path"]
             download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-            content_resp = requests.get(download_url, timeout=30)
+            content_resp = requests.get(download_url, timeout=15)
             content_resp.raise_for_status()
             state = json.loads(content_resp.content.decode("utf-8"))
         except Exception:
             logger.exception("Не удалось скачать/распарсить снапшот из канала")
             return False
-
         self._load_state_dict(state)
-        logger.info(
-            "Состояние восстановлено из канала: %d пользователей, %d фильтров, %d картинок, %d переводов.",
-            len(self.user_langs), len(self.user_filters), len(self.known_images), len(self.translations),
-        )
+        logger.info("Состояние восстановлено из канала: %d предметов, %d переводов.", cache.size, len(self.translations))
         return True
 
     def save_to_channel_now(self) -> bool:
         state = self._to_state_dict()
-
         tmp_path = None
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".json", delete=False, encoding="utf-8"
-            ) as tmp:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as tmp:
                 json.dump(state, tmp, ensure_ascii=False, indent=2)
                 tmp_path = tmp.name
-
             api_base = f"https://api.telegram.org/bot{BOT_TOKEN}"
             with open(tmp_path, "rb") as f:
                 send_resp = requests.post(
@@ -974,31 +988,17 @@ class StateStore:
             send_resp.raise_for_status()
             send_data = send_resp.json()
             if not send_data.get("ok"):
-                logger.error("sendDocument вернул ошибку: %s", send_data)
                 return False
-
             message_id = send_data["result"]["message_id"]
-
-            pin_resp = requests.post(
+            requests.post(
                 f"{api_base}/pinChatMessage",
-                data={
-                    "chat_id": self.channel_id,
-                    "message_id": message_id,
-                    "disable_notification": True,
-                },
+                data={"chat_id": self.channel_id, "message_id": message_id, "disable_notification": True},
                 timeout=20,
             )
-            pin_data = pin_resp.json()
-            if not pin_data.get("ok"):
-                logger.warning(
-                    "Не удалось закрепить снапшот (файл всё же отправлен): %s",
-                    pin_data,
-                )
-
-            logger.info("Снапшот состояния сохранён и закреплён в канале-хранилище.")
+            logger.info("Снапшот сохранён и закреплён.")
             return True
         except Exception:
-            logger.exception("Ошибка при сохранении снапшота в канал")
+            logger.exception("Ошибка сохранения снапшота")
             return False
         finally:
             if tmp_path and os.path.exists(tmp_path):
@@ -1010,9 +1010,7 @@ class StateStore:
     def start_debounce_worker(self) -> None:
         if self._debounce_thread is not None:
             return
-        self._debounce_thread = threading.Thread(
-            target=self._debounce_loop, daemon=True, name="state-debounce"
-        )
+        self._debounce_thread = threading.Thread(target=self._debounce_loop, daemon=True, name="state-debounce")
         self._debounce_thread.start()
 
     def _debounce_loop(self) -> None:
@@ -1148,51 +1146,29 @@ TEXTS["ru"].update({
         "📜 /list — каталог всех предметов\n"
         "📊 /status — статус базы данных"
     ),
-    "help": (
-        "ℹ️ Напиши название предмета MM2 — я найду его ценность.\n\n"
-        "📋 <b>Команды:</b>\n"
-        "🌐 /settings — сменить язык интерфейса\n"
-        "🎚 /filters — настроить фильтры (цена, редкость, стабильность)\n"
-        "📜 /list — список всех предметов (дорогие → дешёвые)\n"
-        "📊 /status — статус базы данных"
-    ),
+    "help": "ℹ️ Напиши название предмета MM2 — я найду его ценность.\n\n📋 <b>Команды:</b>\n"
+            "🌐 /settings — сменить язык интерфейса\n"
+            "🎚 /filters — настроить фильтры (цена, редкость, стабильность)\n"
+            "📜 /list — список всех предметов (дорогие → дешёвые)\n"
+            "📊 /status — статус базы данных",
     "settings_title": "🌐 <b>Выберите язык интерфейса</b>",
     "settings_saved": "✅ Язык сохранён: <b>{lang_name}</b>",
-    "not_found": (
-        "😕 Ничего не найдено по запросу «{query}».\n"
-        "✏️ Проверь написание или попробуй другое название предмета.\n"
-        "🎚 Возможно, стоит проверить активные /filters."
-    ),
-    "searching": "🔎 Ищу...",
+    "not_found": "😕 Ничего не найдено по запросу «{query}».\n✏️ Проверь написание или попробуй другое название предмета.\n🎚 Возможно, стоит проверить активные /filters.",
     "value_label": "Примерная стоимость",
     "status_label": "Категория",
     "stability_label": "Стабильность",
     "origin_label": "Событие",
     "unknown_stability": "Неизвестно",
     "cache_empty": "⏳ База данных ещё загружается, попробуй через минуту.",
-    "status_report": (
-        "📊 Предметов в базе: <b>{count}</b>\n"
-        "🕒 Последнее обновление: <b>{last_update}</b>\n"
-        "⚠️ Ошибка последнего обновления: <b>{error}</b>\n"
-        "💾 Хранилище: приватный Telegram-канал"
-    ),
-    "status_report_ok": (
-        "📊 Предметов в базе: <b>{count}</b>\n"
-        "🕒 Последнее обновление: <b>{last_update}</b>\n"
-        "💾 Хранилище: приватный Telegram-канал"
-    ),
+    "status_report": "📊 Предметов в базе: <b>{count}</b>\n🕒 Последнее обновление: <b>{last_update}</b>\n⚠️ Ошибка последнего обновления: <b>{error}</b>\n💾 Хранилище: приватный Telegram-канал",
+    "status_report_ok": "📊 Предметов в базе: <b>{count}</b>\n🕒 Последнее обновление: <b>{last_update}</b>\n💾 Хранилище: приватный Telegram-канал",
     "never": "ещё не обновлялось",
     "no_error": "нет",
-    "admin_set_refresh": (
-        "⚙️ Текущий интервал обновления: {days} дн.\n"
-        "Используйте /setrefresh <число> чтобы изменить (от 1 до 90)."
-    ),
+    "admin_set_refresh": "⚙️ Текущий интервал обновления: {days} дн.\nИспользуйте /setrefresh <число> чтобы изменить (от 1 до 90).",
     "admin_refresh_updated": "✅ Интервал обновления изменён на {days} дн.",
     "admin_refresh_invalid": "❌ Укажите целое число дней от 1 до 90.",
     "admin_only": "⛔ Эта команда доступна только администратору.",
-})
 
-TEXTS["ru"].update({
     "filters_title": "🎚 <b>Фильтры поиска</b>\n\nНастрой параметры и нажми «Применить».",
     "filters_btn_min": "💵 Валюта (от): {value}",
     "filters_btn_max": "💰 Валюта (до): {value}",
@@ -1215,58 +1191,34 @@ TEXTS["ru"].update({
     "list_title": "📜 <b>Каталог предметов</b> (дорогие → дешёвые)",
     "list_empty": "😕 По заданным фильтрам ничего не найдено. Проверь /filters.",
     "list_nav_page": "📄 {page}/{total}",
+    "feedback_like": "👍 Спасибо за отзыв!",
+    "feedback_dislike": "👎 Что именно не так?",
+    "feedback_reason_bad_result": "Неправильный результат",
+    "feedback_reason_bad_translation": "Плохой перевод",
+    "feedback_reason_bad_image": "Неверная картинка",
+    "feedback_reason_other": "Другое",
+    "feedback_ask_details": "📝 Опиши подробнее или укажи правильный вариант перевода/названия (или нажми /cancel):",
+    "feedback_sent": "✅ Спасибо! Администратор получит твой отзыв.",
+    "feedback_cancelled": "❌ Отзыв отменён.",
 })
 
 TEXTS["en"].update({
-    "start": (
-        "👋 <b>Hi!</b> I'm a Murder Mystery 2 item value checker bot.\n\n"
-        "✏️ Just type an item name in English or Russian — "
-        "for example: <i>Chroma Traveler's Gun</i>, <i>Icewing</i>.\n\n"
-        "📋 <b>Commands:</b>\n"
-        "🌐 /settings — interface language\n"
-        "🎚 /filters — configure search filters\n"
-        "📜 /list — item catalog\n"
-        "📊 /status — database status"
-    ),
-    "help": (
-        "ℹ️ Type an MM2 item name — I'll find its value.\n\n"
-        "📋 <b>Commands:</b>\n"
-        "🌐 /settings — change interface language\n"
-        "🎚 /filters — configure filters\n"
-        "📜 /list — list of all items\n"
-        "📊 /status — database status"
-    ),
+    "start": "👋 <b>Hi!</b> I'm a Murder Mystery 2 item value checker bot.\n\n✏️ Just type an item name in English or Russian — for example: <i>Chroma Traveler's Gun</i>, <i>Icewing</i>.\n\n📋 <b>Commands:</b>\n🌐 /settings — interface language\n🎚 /filters — configure search filters\n📜 /list — item catalog\n📊 /status — database status",
+    "help": "ℹ️ Type an MM2 item name — I'll find its value.\n\n📋 <b>Commands:</b>\n🌐 /settings — change interface language\n🎚 /filters — configure filters\n📜 /list — list of all items\n📊 /status — database status",
     "settings_title": "🌐 <b>Choose interface language</b>",
     "settings_saved": "✅ Language saved: <b>{lang_name}</b>",
-    "not_found": (
-        "😕 Nothing found for «{query}».\n"
-        "✏️ Check the spelling or try another query.\n"
-        "🎚 You may also want to check your active /filters."
-    ),
-    "searching": "🔎 Searching...",
+    "not_found": "😕 Nothing found for «{query}».\n✏️ Check the spelling or try another query.\n🎚 You may also want to check your active /filters.",
     "value_label": "Estimated Value",
     "status_label": "Category",
     "stability_label": "Stability",
     "origin_label": "Origin",
     "unknown_stability": "Unknown",
     "cache_empty": "⏳ Database is still loading, please try again in a minute.",
-    "status_report": (
-        "📊 Items in database: <b>{count}</b>\n"
-        "🕒 Last update: <b>{last_update}</b>\n"
-        "⚠️ Last update error: <b>{error}</b>\n"
-        "💾 Storage: private Telegram channel"
-    ),
-    "status_report_ok": (
-        "📊 Items in database: <b>{count}</b>\n"
-        "🕒 Last update: <b>{last_update}</b>\n"
-        "💾 Storage: private Telegram channel"
-    ),
+    "status_report": "📊 Items in database: <b>{count}</b>\n🕒 Last update: <b>{last_update}</b>\n⚠️ Last update error: <b>{error}</b>\n💾 Storage: private Telegram channel",
+    "status_report_ok": "📊 Items in database: <b>{count}</b>\n🕒 Last update: <b>{last_update}</b>\n💾 Storage: private Telegram channel",
     "never": "not updated yet",
     "no_error": "none",
-    "admin_set_refresh": (
-        "⚙️ Current refresh interval: {days} days.\n"
-        "Use /setrefresh <number> to change (1–90)."
-    ),
+    "admin_set_refresh": "⚙️ Current refresh interval: {days} days.\nUse /setrefresh <number> to change (1–90).",
     "admin_refresh_updated": "✅ Refresh interval set to {days} days.",
     "admin_refresh_invalid": "❌ Please enter an integer from 1 to 90.",
     "admin_only": "⛔ This command is for the administrator only.",
@@ -1292,6 +1244,15 @@ TEXTS["en"].update({
     "list_title": "📜 <b>Item catalog</b>",
     "list_empty": "😕 Nothing matches your filters.",
     "list_nav_page": "📄 {page}/{total}",
+    "feedback_like": "👍 Thanks for your feedback!",
+    "feedback_dislike": "👎 What's wrong?",
+    "feedback_reason_bad_result": "Wrong result",
+    "feedback_reason_bad_translation": "Bad translation",
+    "feedback_reason_bad_image": "Wrong image",
+    "feedback_reason_other": "Other",
+    "feedback_ask_details": "📝 Describe the problem or suggest correct translation/name (or /cancel):",
+    "feedback_sent": "✅ Thank you! Administrator will receive your feedback.",
+    "feedback_cancelled": "❌ Feedback cancelled.",
 })
 
 def t(lang: str, key: str, **kwargs) -> str:
@@ -1300,7 +1261,7 @@ def t(lang: str, key: str, **kwargs) -> str:
     return template.format(**kwargs) if kwargs else template
 
 # --------------------------------------------------------------------------- #
-# Шрифты
+# Шрифты и картинки
 # --------------------------------------------------------------------------- #
 
 FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
@@ -1336,7 +1297,6 @@ def get_font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
     cache_key = (weight_file, size)
     if cache_key in _font_cache:
         return _font_cache[cache_key]
-
     local_path = os.path.join(FONTS_DIR, weight_file)
     path = local_path if os.path.exists(local_path) else _FALLBACK_FONT_MAP.get(weight_file, "")
     try:
@@ -1345,10 +1305,6 @@ def get_font(size: int, weight: str = "regular") -> ImageFont.FreeTypeFont:
         font = ImageFont.load_default()
     _font_cache[cache_key] = font
     return font
-
-# --------------------------------------------------------------------------- #
-# Скачивание картинок
-# --------------------------------------------------------------------------- #
 
 _IMG_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36",
@@ -1373,7 +1329,6 @@ def _try_download_single(url: str) -> Optional[Image.Image]:
         return None
 
 def refresh_item_image_candidates(item: Item) -> list[str]:
-    """Делает запрос к ScrapingAnt для страницы категории предмета и собирает ВСЕ кандидаты его картинки."""
     slug = item.category_slug
     target_url = f"{BASE_URL}/mm2/{slug}"
     api_url = f"https://api.scrapingant.com/v2/general?url={target_url}&x-api-key={SCRAPINGANT_API_KEY}&browser=true"
@@ -1395,7 +1350,6 @@ def refresh_item_image_candidates(item: Item) -> list[str]:
                     name = head.get_text(strip=True)
             if not name or normalize_text(name) != normalize_text(item.name):
                 continue
-
             img_tag = card.find("img", class_="itemimage") or card.find("img")
             if img_tag:
                 for attr in ("src", "data-src", "data-lazy-src"):
@@ -1404,7 +1358,6 @@ def refresh_item_image_candidates(item: Item) -> list[str]:
                         normalized = _normalize_image_src(raw)
                         if normalized and normalized not in fresh_candidates:
                             fresh_candidates.append(normalized)
-
             media_dir = f"{BASE_URL}/media/mm2{slug}/"
             for guess in guess_image_filenames(name):
                 candidate = f"{media_dir}{guess}.png"
@@ -1416,23 +1369,17 @@ def refresh_item_image_candidates(item: Item) -> list[str]:
     return fresh_candidates
 
 def _candidate_matches_item(url: str, item_name: str) -> bool:
-    """Проверяет, что URL кандидата содержит все значимые слова из названия предмета."""
     name_clean = _strip_name_tags(item_name).lower()
-    name_words = set(re.findall(r"[a-z0-9]+", name_clean))
-    # убираем стоп-слова
-    name_words -= _IMG_STOPWORDS
+    name_words = set(re.findall(r"[a-z0-9]+", name_clean)) - _IMG_STOPWORDS
     if not name_words:
         return True
     url_lower = url.lower()
-    # Проверяем, что каждое значимое слово присутствует в URL
     return all(word in url_lower for word in name_words)
 
 def download_item_image(item: Item) -> Optional[Image.Image]:
-    # Сначала берем кандидатов, которые точно содержат все ключевые слова
     candidates = [url for url in item.image_url_candidates if _candidate_matches_item(url, item.name)]
     if not candidates:
-        candidates = list(item.image_url_candidates)  # fallback
-
+        candidates = list(item.image_url_candidates)
     for url in candidates:
         img = _try_download_single(url)
         if img is not None:
@@ -1440,8 +1387,6 @@ def download_item_image(item: Item) -> Optional[Image.Image]:
                 item.image_url = url
             state_store.save_known_image_url(normalize_text(item.name), url)
             return img
-
-    # Все кандидаты провалились — пробуем обновить и перебрать полный список через ScrapingAnt
     fresh_candidates = refresh_item_image_candidates(item)
     fresh_filtered = [u for u in fresh_candidates if _candidate_matches_item(u, item.name)]
     for fresh_url in fresh_filtered:
@@ -1455,145 +1400,122 @@ def download_item_image(item: Item) -> Optional[Image.Image]:
             return img
     return None
 
-# --------------------------------------------------------------------------- #
-# Генерация изображения и подписи
-# --------------------------------------------------------------------------- #
-
 CARD_W, CARD_H = 800, 800
-
-RARITY_GRADIENTS: dict[str, tuple[tuple[int, int, int], tuple[int, int, int]]] = {
-    "godlies":     ((255, 196, 64), (120, 40, 140)),
-    "chromas":     ((255, 90, 205), (70, 60, 255)),
-    "legendaries": ((255, 140, 60), (140, 30, 30)),
-    "ancients":    ((170, 100, 255), (40, 20, 90)),
-    "vintages":    ((190, 150, 110), (60, 40, 30)),
-    "rares":       ((80, 150, 255), (20, 40, 110)),
-    "uncommons":   ((80, 220, 140), (10, 60, 50)),
-    "commons":     ((190, 200, 210), (60, 60, 70)),
+RARITY_GRADIENTS = {
+    "godlies": ((255,196,64),(120,40,140)),
+    "chromas": ((255,90,205),(70,60,255)),
+    "legendaries": ((255,140,60),(140,30,30)),
+    "ancients": ((170,100,255),(40,20,90)),
+    "vintages": ((190,150,110),(60,40,30)),
+    "rares": ((80,150,255),(20,40,110)),
+    "uncommons": ((80,220,140),(10,60,50)),
+    "commons": ((190,200,210),(60,60,70)),
 }
-DEFAULT_GRADIENT = ((90, 90, 140), (20, 20, 40))
-
-RARITY_ACCENT: dict[str, tuple[int, int, int]] = {
-    "godlies":     (255, 210, 90),
-    "chromas":     (255, 110, 220),
-    "legendaries": (255, 150, 70),
-    "ancients":    (190, 130, 255),
-    "vintages":    (205, 170, 130),
-    "rares":       (110, 170, 255),
-    "uncommons":   (100, 230, 160),
-    "commons":     (210, 215, 225),
+DEFAULT_GRADIENT = ((90,90,140),(20,20,40))
+RARITY_ACCENT = {
+    "godlies": (255,210,90),
+    "chromas": (255,110,220),
+    "legendaries": (255,150,70),
+    "ancients": (190,130,255),
+    "vintages": (205,170,130),
+    "rares": (110,170,255),
+    "uncommons": (100,230,160),
+    "commons": (210,215,225),
 }
 
-def _lerp_color(c1: tuple[int, int, int], c2: tuple[int, int, int], t_: float) -> tuple[int, int, int]:
-    return (
-        int(c1[0] + (c2[0] - c1[0]) * t_),
-        int(c1[1] + (c2[1] - c1[1]) * t_),
-        int(c1[2] + (c2[2] - c1[2]) * t_),
-    )
+def _lerp_color(c1, c2, t_):
+    return (int(c1[0]+(c2[0]-c1[0])*t_), int(c1[1]+(c2[1]-c1[1])*t_), int(c1[2]+(c2[2]-c1[2])*t_))
 
-def _make_mesh_background(width: int, height: int, slug: str) -> Image.Image:
+def _make_mesh_background(width, height, slug):
     c1, c2 = RARITY_GRADIENTS.get(slug, DEFAULT_GRADIENT)
     base = Image.new("RGB", (width, height), c1)
     px = base.load()
     for y in range(height):
         for x in range(0, width, 2):
-            t_ = ((x * 0.6 + y * 0.4)) / (width * 0.6 + height * 0.4)
+            t_ = ((x*0.6 + y*0.4)) / (width*0.6 + height*0.4)
             col = _lerp_color(c1, c2, min(1.0, max(0.0, t_)))
             px[x, y] = col
-            if x + 1 < width:
-                px[x + 1, y] = col
+            if x+1 < width:
+                px[x+1, y] = col
     base = base.convert("RGBA")
-
-    blob_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    blob_layer = Image.new("RGBA", (width, height), (0,0,0,0))
     bdraw = ImageDraw.Draw(blob_layer)
-    accent = RARITY_ACCENT.get(slug, (150, 150, 220))
-    bdraw.ellipse([width * 0.5, -height * 0.2, width * 1.3, height * 0.6], fill=(*accent, 120))
-    bdraw.ellipse([-width * 0.3, height * 0.5, width * 0.5, height * 1.3], fill=(*c2, 130))
+    accent = RARITY_ACCENT.get(slug, (150,150,220))
+    bdraw.ellipse([width*0.5, -height*0.2, width*1.3, height*0.6], fill=(*accent, 120))
+    bdraw.ellipse([-width*0.3, height*0.5, width*0.5, height*1.3], fill=(*c2, 130))
     blob_layer = blob_layer.filter(ImageFilter.GaussianBlur(130))
-
     return Image.alpha_composite(base, blob_layer).convert("RGBA")
 
 def create_item_image(item: Item, lang: str) -> io.BytesIO:
-    """Генерирует минималистичную картинку предмета на градиентном фоне без текста."""
     width, height = CARD_W, CARD_H
     slug = item.category_slug
-
     canvas = _make_mesh_background(width, height, slug)
     item_img = download_item_image(item)
-
     panel_center_x = width // 2
     panel_center_y = height // 2
-
     if item_img:
         margin = 40
-        max_w = width - margin * 2
-        max_h = height - margin * 2
+        max_w = width - margin*2
+        max_h = height - margin*2
         ratio = min(max_w / item_img.width, max_h / item_img.height, 1.0)
         if ratio < 1.0 or (item_img.width < max_w and item_img.height < max_h):
             ratio = min(max_w / item_img.width, max_h / item_img.height)
         new_w = max(1, int(item_img.width * ratio))
         new_h = max(1, int(item_img.height * ratio))
         item_img = item_img.resize((new_w, new_h), Image.LANCZOS)
-
-        shadow = Image.new("RGBA", (new_w + 80, new_h + 80), (0, 0, 0, 0))
+        shadow = Image.new("RGBA", (new_w+80, new_h+80), (0,0,0,0))
         sdraw = ImageDraw.Draw(shadow)
-        sdraw.ellipse([20, new_h - 10, new_w + 60, new_h + 70], fill=(0, 0, 0, 100))
+        sdraw.ellipse([20, new_h-10, new_w+60, new_h+70], fill=(0,0,0,100))
         shadow = shadow.filter(ImageFilter.GaussianBlur(25))
-
-        canvas.paste(
-            shadow,
-            (panel_center_x - (new_w + 80) // 2, panel_center_y - new_h // 2 - 10),
-            shadow,
-        )
-        canvas.paste(
-            item_img,
-            (panel_center_x - new_w // 2, panel_center_y - new_h // 2),
-            item_img,
-        )
+        canvas.paste(shadow, (panel_center_x - (new_w+80)//2, panel_center_y - new_h//2 - 10), shadow)
+        canvas.paste(item_img, (panel_center_x - new_w//2, panel_center_y - new_h//2), item_img)
     else:
         draw = ImageDraw.Draw(canvas)
-        draw.text(
-            (panel_center_x, panel_center_y - 20), "🖼", anchor="mm", font=get_font(110, "regular"),
-            fill=(255, 255, 255, 140),
-        )
-        draw.text(
-            (panel_center_x, panel_center_y + 80), "Нет фото" if lang == "ru" else "No image",
-            anchor="mm", font=get_font(28, "medium"), fill=(255, 255, 255, 160),
-        )
-
+        draw.text((panel_center_x, panel_center_y-20), "🖼", anchor="mm", font=get_font(110), fill=(255,255,255,140))
+        draw.text((panel_center_x, panel_center_y+80), "Нет фото" if lang=="ru" else "No image", anchor="mm", font=get_font(28), fill=(255,255,255,160))
     bio = io.BytesIO()
     canvas.convert("RGB").save(bio, format="JPEG", quality=95)
     bio.seek(0)
     return bio
 
 def format_item_caption(item: Item, lang: str) -> str:
-    """Форматирует эстетичную подпись к изображению товара."""
-    emoji = RARITY_EMOJI.get(item.category_slug, "🟡")
-    rarity_txt = rarity_label_localized(lang, item.category_slug)
+    plate = rarity_plate_html(item.category_slug)
     stab_txt = localized_stability(lang, item.stability) if item.stability else t(lang, "unknown_stability")
-
     name_en = item.name or "???"
-    name_ru = get_ru_name(item.name) if (lang == "ru" and item.name) else ""
-
+    name_ru = get_ru_name(item.name) if lang == "ru" else ""
     if name_ru and normalize_text(name_ru) != normalize_text(name_en):
         title = f"<b>{html.escape(name_en)}</b> (<i>{html.escape(name_ru)}</i>)"
     else:
         title = f"<b>{html.escape(name_en)}</b>"
-
     lines = [
         f"✨ {title}",
-        f"━━━━━━━━━━━━━━━━━━",
+        "━━━━━━━━━━━━━━━━━━",
         f"💰 <b>{t(lang, 'value_label')}:</b> ⛁ <b>{item.value_display or 'N/A'}</b>",
-        f"🏷 <b>{t(lang, 'status_label')}:</b> {emoji} {rarity_txt}",
+        f"🏷 <b>{t(lang, 'status_label')}:</b> {plate}",
         f"📈 <b>{t(lang, 'stability_label')}:</b> {stab_txt}",
     ]
     if item.origin:
         lines.append(f"🎁 <b>{t(lang, 'origin_label')}:</b> {html.escape(item.origin)}")
-
     return "\n".join(lines)
 
+def feedback_keyboard(lang: str, item_name: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("👍", callback_data=f"fb:like:{item_name}"),
+            InlineKeyboardButton("👎", callback_data=f"fb:dislike:{item_name}"),
+        ]
+    ])
+
+def dislike_reason_keyboard(lang: str, item_name: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(t(lang, "feedback_reason_bad_result"), callback_data=f"fb_reason:bad_result:{item_name}")],
+        [InlineKeyboardButton(t(lang, "feedback_reason_bad_translation"), callback_data=f"fb_reason:bad_translation:{item_name}")],
+        [InlineKeyboardButton(t(lang, "feedback_reason_bad_image"), callback_data=f"fb_reason:bad_image:{item_name}")],
+        [InlineKeyboardButton(t(lang, "feedback_reason_other"), callback_data=f"fb_reason:other:{item_name}")],
+    ])
+
 # --------------------------------------------------------------------------- #
-# Вспомогательные функции UI
+# UI и команды
 # --------------------------------------------------------------------------- #
 
 LIST_PAGE_SIZE = 8
@@ -1615,22 +1537,10 @@ def _filters_summary_value(lang: str, filters: ItemFilters, kind: str) -> str:
 
 def build_filters_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(
-            t(lang, "filters_btn_min", value=_filters_summary_value(lang, filters, "min")),
-            callback_data="filt:ask_min",
-        )],
-        [InlineKeyboardButton(
-            t(lang, "filters_btn_max", value=_filters_summary_value(lang, filters, "max")),
-            callback_data="filt:ask_max",
-        )],
-        [InlineKeyboardButton(
-            t(lang, "filters_btn_rarity", value=_filters_summary_value(lang, filters, "rarity")),
-            callback_data="filt:rarity_menu",
-        )],
-        [InlineKeyboardButton(
-            t(lang, "filters_btn_stability", value=_filters_summary_value(lang, filters, "stability")),
-            callback_data="filt:stability_menu",
-        )],
+        [InlineKeyboardButton(t(lang, "filters_btn_min", value=_filters_summary_value(lang, filters, "min")), callback_data="filt:ask_min")],
+        [InlineKeyboardButton(t(lang, "filters_btn_max", value=_filters_summary_value(lang, filters, "max")), callback_data="filt:ask_max")],
+        [InlineKeyboardButton(t(lang, "filters_btn_rarity", value=_filters_summary_value(lang, filters, "rarity")), callback_data="filt:rarity_menu")],
+        [InlineKeyboardButton(t(lang, "filters_btn_stability", value=_filters_summary_value(lang, filters, "stability")), callback_data="filt:stability_menu")],
         [
             InlineKeyboardButton(t(lang, "filters_btn_reset"), callback_data="filt:reset"),
             InlineKeyboardButton(t(lang, "filters_btn_apply"), callback_data="filt:apply"),
@@ -1639,54 +1549,39 @@ def build_filters_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMar
     return InlineKeyboardMarkup(rows)
 
 def build_rarity_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(
-        ("✅ " if filters.rarity_slug == "all" else "") + t(lang, "filters_option_all"),
-        callback_data="filt:set_rarity:all",
-    )]]
+    rows = [[InlineKeyboardButton(("✅ " if filters.rarity_slug == "all" else "") + t(lang, "filters_option_all"), callback_data="filt:set_rarity:all")]]
     for slug, _label, emoji in CATEGORIES:
         mark = "✅ " if filters.rarity_slug == slug else ""
-        rows.append([InlineKeyboardButton(
-            f"{mark}{emoji} {rarity_label_localized(lang, slug)}",
-            callback_data=f"filt:set_rarity:{slug}",
-        )])
+        rows.append([InlineKeyboardButton(f"{mark}{emoji} {rarity_label_localized(lang, slug)}", callback_data=f"filt:set_rarity:{slug}")])
     rows.append([InlineKeyboardButton("⬅️", callback_data="filt:back")])
     return InlineKeyboardMarkup(rows)
 
 def build_stability_menu_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(
-        ("✅ " if filters.stability_key == "all" else "") + t(lang, "filters_option_all"),
-        callback_data="filt:set_stability:all",
-    )]]
+    rows = [[InlineKeyboardButton(("✅ " if filters.stability_key == "all" else "") + t(lang, "filters_option_all"), callback_data="filt:set_stability:all")]]
     for key, ru_label, emoji in STABILITY_FILTER_OPTIONS:
         label = ru_label if lang == "ru" else key.title()
         mark = "✅ " if filters.stability_key == key else ""
-        rows.append([InlineKeyboardButton(
-            f"{mark}{emoji} {label}",
-            callback_data=f"filt:set_stability:{key}",
-        )])
+        rows.append([InlineKeyboardButton(f"{mark}{emoji} {label}", callback_data=f"filt:set_stability:{key}")])
     rows.append([InlineKeyboardButton("⬅️", callback_data="filt:back")])
     return InlineKeyboardMarkup(rows)
 
 def build_list_keyboard(lang: str, page: int, total_pages: int) -> InlineKeyboardMarkup:
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️", callback_data=f"list:page:{page - 1}"))
-    nav.append(InlineKeyboardButton(
-        t(lang, "list_nav_page", page=page + 1, total=max(total_pages, 1)),
-        callback_data="list:noop",
-    ))
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"list:page:{page-1}"))
+    nav.append(InlineKeyboardButton(t(lang, "list_nav_page", page=page+1, total=max(total_pages,1)), callback_data="list:noop"))
     if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("➡️", callback_data=f"list:page:{page + 1}"))
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"list:page:{page+1}"))
     return InlineKeyboardMarkup([nav])
 
 def render_list_page_text(lang: str, items: list[Item], page: int, total_pages: int) -> str:
     start = page * LIST_PAGE_SIZE
-    page_items = items[start:start + LIST_PAGE_SIZE]
+    page_items = items[start:start+LIST_PAGE_SIZE]
     lines = [t(lang, "list_title"), ""]
-    for i, item in enumerate(page_items, start=start + 1):
-        emoji = RARITY_EMOJI.get(item.category_slug, "•")
+    for i, item in enumerate(page_items, start=start+1):
+        plate = rarity_plate_html(item.category_slug)
         value = item.value_display or "N/A"
-        lines.append(f"{i}. {emoji} <b>{html.escape(item.name)}</b> — ⛁ {value}")
+        lines.append(f"{i}. {plate} <b>{html.escape(item.name)}</b> — ⛁ {value}")
     return "\n".join(lines)
 
 async def send_item_card(update: Update, context: ContextTypes.DEFAULT_TYPE, item: Item, lang: str) -> None:
@@ -1698,15 +1593,15 @@ async def send_item_card(update: Update, context: ContextTypes.DEFAULT_TYPE, ite
             chat_id=chat_id,
             photo=photo,
             caption=caption,
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
+            reply_markup=feedback_keyboard(lang, item.name),
         )
     except Exception:
         logger.exception("Не удалось отправить изображение для '%s'", item.name)
-        await context.bot.send_message(chat_id=chat_id, text=caption, parse_mode=ParseMode.HTML)
-
-# --------------------------------------------------------------------------- #
-# Команды
-# --------------------------------------------------------------------------- #
+        await context.bot.send_message(
+            chat_id=chat_id, text=caption, parse_mode=ParseMode.HTML,
+            reply_markup=feedback_keyboard(lang, item.name),
+        )
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = state_store.get_user_lang(update.effective_user.id)
@@ -1718,26 +1613,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = state_store.get_user_lang(update.effective_user.id)
-    rows = [
-        [InlineKeyboardButton(name, callback_data=f"setlang:{code}")]
-        for code, name in SUPPORTED_LANGS.items()
-    ]
-    await update.message.reply_text(
-        t(lang, "settings_title"), parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(rows),
-    )
+    rows = [[InlineKeyboardButton(name, callback_data=f"setlang:{code}")] for code, name in SUPPORTED_LANGS.items()]
+    await update.message.reply_text(t(lang, "settings_title"), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(rows))
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     lang = state_store.get_user_lang(update.effective_user.id)
     count = cache.size
-    last_update = (
-        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cache.last_updated))
-        if cache.last_updated else t(lang, "never")
-    )
-    if cache.last_error:
-        text = t(lang, "status_report", count=count, last_update=last_update, error=cache.last_error)
-    else:
-        text = t(lang, "status_report_ok", count=count, last_update=last_update)
+    last_update = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cache.last_updated)) if cache.last_updated else t(lang, "never")
+    text = t(lang, "status_report", count=count, last_update=last_update, error=cache.last_error) if cache.last_error else t(lang, "status_report_ok", count=count, last_update=last_update)
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 async def setrefresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1760,9 +1643,8 @@ async def setrefresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     state_store.set_refresh_interval_days(days)
     scheduler = context.application.bot_data.get("scheduler")
     if scheduler:
-        seconds = days * 86400
         try:
-            scheduler.reschedule_job("cache_refresh", trigger="interval", seconds=seconds)
+            scheduler.reschedule_job("cache_refresh", trigger="interval", seconds=days*86400)
         except Exception:
             logger.exception("Не удалось перепланировать задачу обновления кэша")
     await update.message.reply_text(t(lang, "admin_refresh_updated", days=days))
@@ -1772,10 +1654,7 @@ async def filters_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     lang = state_store.get_user_lang(user_id)
     context.user_data.pop("awaiting_filter_input", None)
     filters_obj = state_store.get_user_filters(user_id)
-    await update.message.reply_text(
-        t(lang, "filters_title"), parse_mode=ParseMode.HTML,
-        reply_markup=build_filters_keyboard(lang, filters_obj),
-    )
+    await update.message.reply_text(t(lang, "filters_title"), parse_mode=ParseMode.HTML, reply_markup=build_filters_keyboard(lang, filters_obj))
 
 async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -1791,16 +1670,34 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     total_pages = max(1, math.ceil(len(items) / LIST_PAGE_SIZE))
     page = 0
     text = render_list_page_text(lang, items, page, total_pages)
-    await update.message.reply_text(
-        text, parse_mode=ParseMode.HTML,
-        reply_markup=build_list_keyboard(lang, page, total_pages),
-    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=build_list_keyboard(lang, page, total_pages))
 
 async def search_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     lang = state_store.get_user_lang(user_id)
     query = (update.message.text or "").strip()
     if not query:
+        return
+
+    if context.user_data.get("awaiting_feedback"):
+        item_name = context.user_data["awaiting_feedback"]
+        reason = context.user_data.get("feedback_reason", "unknown")
+        feedback_text = query
+        user = update.effective_user
+        msg = (
+            f"📩 <b>Фидбэк от пользователя</b>\n"
+            f"👤 {user.mention_html()} (ID: {user.id})\n"
+            f"🔹 Предмет: <b>{html.escape(item_name)}</b>\n"
+            f"🔹 Причина: {reason}\n"
+            f"📝 Комментарий: {html.escape(feedback_text)}"
+        )
+        try:
+            await context.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode=ParseMode.HTML)
+        except Exception as e:
+            logger.error("Не удалось отправить фидбэк админу: %s", e)
+        context.user_data.pop("awaiting_feedback", None)
+        context.user_data.pop("feedback_reason", None)
+        await update.message.reply_text(t(lang, "feedback_sent"))
         return
 
     awaiting = context.user_data.get("awaiting_filter_input")
@@ -1829,10 +1726,7 @@ async def search_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             filters_obj.max_value = value
         state_store.set_user_filters(user_id, filters_obj)
         context.user_data.pop("awaiting_filter_input", None)
-        await update.message.reply_text(
-            t(lang, "filters_title"), parse_mode=ParseMode.HTML,
-            reply_markup=build_filters_keyboard(lang, filters_obj),
-        )
+        await update.message.reply_text(t(lang, "filters_title"), parse_mode=ParseMode.HTML, reply_markup=build_filters_keyboard(lang, filters_obj))
         return
 
     if cache.size == 0:
@@ -1842,16 +1736,13 @@ async def search_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     filters_obj = state_store.get_user_filters(user_id)
     results = cache.search(query, limit=5, filters=filters_obj)
     if not results:
-        await update.message.reply_text(
-            t(lang, "not_found", query=html.escape(query)), parse_mode=ParseMode.HTML,
-        )
+        await update.message.reply_text(t(lang, "not_found", query=html.escape(query)), parse_mode=ParseMode.HTML)
         return
 
     best_item, _score = results[0]
     await send_item_card(update, context, best_item, lang)
 
 async def force_refresh_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Принудительное обновление кэша (только для админа)."""
     user_id = update.effective_user.id
     lang = state_store.get_user_lang(user_id)
     if user_id != ADMIN_ID:
@@ -1860,8 +1751,17 @@ async def force_refresh_command(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text("🔄 Запускаю принудительное обновление кэша...")
     threading.Thread(target=cache.refresh, daemon=True).start()
 
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.user_data.get("awaiting_feedback"):
+        context.user_data.pop("awaiting_feedback", None)
+        context.user_data.pop("feedback_reason", None)
+        lang = state_store.get_user_lang(update.effective_user.id)
+        await update.message.reply_text(t(lang, "feedback_cancelled"))
+    else:
+        await update.message.reply_text("Нечего отменять.")
+
 # --------------------------------------------------------------------------- #
-# Callback Query
+# Callback Query (включая фидбэк)
 # --------------------------------------------------------------------------- #
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1871,16 +1771,34 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     data = query.data or ""
 
     try:
+        if data.startswith("fb:like:"):
+            item_name = data.split(":", 2)[2]
+            await query.answer(t(lang, "feedback_like"))
+            return
+
+        if data.startswith("fb:dislike:"):
+            item_name = data.split(":", 2)[2]
+            await query.answer()
+            await query.edit_message_reply_markup(reply_markup=dislike_reason_keyboard(lang, item_name))
+            return
+
+        if data.startswith("fb_reason:"):
+            parts = data.split(":", 2)
+            reason = parts[1]
+            item_name = parts[2] if len(parts) > 2 else ""
+            context.user_data["awaiting_feedback"] = item_name
+            context.user_data["feedback_reason"] = reason
+            await query.answer()
+            await query.edit_message_text(t(lang, "feedback_ask_details"), parse_mode=ParseMode.HTML)
+            return
+
         if data.startswith("setlang:"):
             new_lang = data.split(":", 1)[1]
             if new_lang in SUPPORTED_LANGS:
                 state_store.set_user_lang(user_id, new_lang)
                 lang = new_lang
                 await query.answer()
-                await query.edit_message_text(
-                    t(lang, "settings_saved", lang_name=SUPPORTED_LANGS[new_lang]),
-                    parse_mode=ParseMode.HTML,
-                )
+                await query.edit_message_text(t(lang, "settings_saved", lang_name=SUPPORTED_LANGS[new_lang]), parse_mode=ParseMode.HTML)
             else:
                 await query.answer()
             return
@@ -1888,84 +1806,54 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         if data.startswith("filt:"):
             action = data[len("filt:"):]
             filters_obj = state_store.get_user_filters(user_id)
-
             if action == "ask_min":
                 context.user_data["awaiting_filter_input"] = "min"
                 await query.answer()
                 await query.edit_message_text(t(lang, "filters_ask_min"), parse_mode=ParseMode.HTML)
                 return
-
             if action == "ask_max":
                 context.user_data["awaiting_filter_input"] = "max"
                 await query.answer()
                 await query.edit_message_text(t(lang, "filters_ask_max"), parse_mode=ParseMode.HTML)
                 return
-
             if action == "rarity_menu":
                 await query.answer()
-                await query.edit_message_text(
-                    t(lang, "filters_rarity_title"), parse_mode=ParseMode.HTML,
-                    reply_markup=build_rarity_menu_keyboard(lang, filters_obj),
-                )
+                await query.edit_message_text(t(lang, "filters_rarity_title"), parse_mode=ParseMode.HTML, reply_markup=build_rarity_menu_keyboard(lang, filters_obj))
                 return
-
             if action == "stability_menu":
                 await query.answer()
-                await query.edit_message_text(
-                    t(lang, "filters_stability_title"), parse_mode=ParseMode.HTML,
-                    reply_markup=build_stability_menu_keyboard(lang, filters_obj),
-                )
+                await query.edit_message_text(t(lang, "filters_stability_title"), parse_mode=ParseMode.HTML, reply_markup=build_stability_menu_keyboard(lang, filters_obj))
                 return
-
             if action.startswith("set_rarity:"):
                 slug = action.split(":", 1)[1]
                 filters_obj.rarity_slug = slug
                 state_store.set_user_filters(user_id, filters_obj)
                 await query.answer(t(lang, "filters_saved"))
-                await query.edit_message_text(
-                    t(lang, "filters_title"), parse_mode=ParseMode.HTML,
-                    reply_markup=build_filters_keyboard(lang, filters_obj),
-                )
+                await query.edit_message_text(t(lang, "filters_title"), parse_mode=ParseMode.HTML, reply_markup=build_filters_keyboard(lang, filters_obj))
                 return
-
             if action.startswith("set_stability:"):
                 key = action.split(":", 1)[1]
                 filters_obj.stability_key = key
                 state_store.set_user_filters(user_id, filters_obj)
                 await query.answer(t(lang, "filters_saved"))
-                await query.edit_message_text(
-                    t(lang, "filters_title"), parse_mode=ParseMode.HTML,
-                    reply_markup=build_filters_keyboard(lang, filters_obj),
-                )
+                await query.edit_message_text(t(lang, "filters_title"), parse_mode=ParseMode.HTML, reply_markup=build_filters_keyboard(lang, filters_obj))
                 return
-
             if action == "reset":
                 state_store.reset_user_filters(user_id)
                 context.user_data.pop("awaiting_filter_input", None)
                 filters_obj = state_store.get_user_filters(user_id)
                 await query.answer(t(lang, "filters_saved"))
-                await query.edit_message_text(
-                    t(lang, "filters_title"), parse_mode=ParseMode.HTML,
-                    reply_markup=build_filters_keyboard(lang, filters_obj),
-                )
+                await query.edit_message_text(t(lang, "filters_title"), parse_mode=ParseMode.HTML, reply_markup=build_filters_keyboard(lang, filters_obj))
                 return
-
             if action == "apply":
                 context.user_data.pop("awaiting_filter_input", None)
                 await query.answer(t(lang, "filters_applied"))
-                await query.edit_message_text(
-                    t(lang, "filters_applied"), parse_mode=ParseMode.HTML,
-                )
+                await query.edit_message_text(t(lang, "filters_applied"), parse_mode=ParseMode.HTML)
                 return
-
             if action == "back":
                 await query.answer()
-                await query.edit_message_text(
-                    t(lang, "filters_title"), parse_mode=ParseMode.HTML,
-                    reply_markup=build_filters_keyboard(lang, filters_obj),
-                )
+                await query.edit_message_text(t(lang, "filters_title"), parse_mode=ParseMode.HTML, reply_markup=build_filters_keyboard(lang, filters_obj))
                 return
-
             await query.answer()
             return
 
@@ -1982,10 +1870,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 page = max(0, min(page, total_pages - 1))
                 text = render_list_page_text(lang, items, page, total_pages)
                 await query.answer()
-                await query.edit_message_text(
-                    text, parse_mode=ParseMode.HTML,
-                    reply_markup=build_list_keyboard(lang, page, total_pages),
-                )
+                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=build_list_keyboard(lang, page, total_pages))
                 return
             await query.answer()
             return
@@ -2011,9 +1896,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     error = context.error
     if isinstance(error, Conflict):
-        logger.error(
-            "Обнаружен конфликт (Conflict): другой экземпляр бота уже активен."
-        )
+        logger.error("Обнаружен конфликт (Conflict): другой экземпляр бота уже активен.")
     elif isinstance(error, NetworkError):
         logger.error("Сетевая ошибка: %s", error)
     elif isinstance(error, TimedOut):
@@ -2027,7 +1910,6 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_header("Content-type", "text/plain; charset=utf-8")
         self.end_headers()
         self.wfile.write(b"OK")
-
     def log_message(self, format, *args):
         return
 
@@ -2044,9 +1926,7 @@ def reset_webhook_and_cleanup():
             logger.info("Вебхук успешно удалён")
         else:
             logger.warning("Не удалось удалить вебхук: %s", resp.text)
-        resp = requests.get(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset=-1&timeout=1", timeout=20
-        )
+        resp = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset=-1&timeout=1", timeout=20)
         if resp.status_code == 200:
             logger.info("Pending updates очищены")
         else:
@@ -2060,32 +1940,39 @@ if __name__ == "__main__":
     logger.info("Очистка вебхука и pending updates...")
     reset_webhook_and_cleanup()
 
+    threading.Thread(target=run_health_check_server, daemon=True).start()
+    logger.info("Health check HTTP-сервер запущен на порту %d", PORT)
+
     logger.info("Восстановление состояния из канала-хранилища...")
-    loaded = state_store.load_from_channel()
+    loaded = False
+    try:
+        local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), STATE_FILENAME)
+        if os.path.exists(local_path):
+            with open(local_path, "r", encoding="utf-8") as f:
+                state_store._load_state_dict(json.load(f))
+            logger.info("Состояние загружено из локального файла.")
+            loaded = True
+    except Exception:
+        pass
     if not loaded:
-        logger.info(
-            "В канале не найдено предыдущего снапшота — начинаем с чистого состояния "
-            "и сразу создадим первый снапшот."
-        )
-        # Первый рефреш, потому что кэш пуст
+        load_thread = threading.Thread(target=lambda: setattr(sys.modules[__name__], '_channel_loaded', state_store.load_from_channel()), daemon=True)
+        _channel_loaded = False
+        load_thread.start()
+        load_thread.join(timeout=15)
+        if not _channel_loaded:
+            logger.warning("Загрузка из канала зависла или не удалась. Продолжаем без состояния.")
+        else:
+            loaded = True
+    if not loaded or cache.size == 0:
+        logger.info("Запускаем первичный парсинг...")
         threading.Thread(target=cache.refresh, daemon=True).start()
     else:
-        if cache.size == 0:
-            logger.info("Кэш предметов отсутствует в снапшоте — запускаем обновление.")
-            threading.Thread(target=cache.refresh, daemon=True).start()
-        else:
-            logger.info("Кэш предметов успешно восстановлен (предметов: %d).", cache.size)
+        logger.info("Кэш восстановлен: %d предметов.", cache.size)
 
     state_store.start_debounce_worker()
-    threading.Thread(target=run_health_check_server, daemon=True).start()
 
     scheduler = BackgroundScheduler()
-    scheduler.add_job(
-        cache.refresh,
-        "interval",
-        days=state_store.get_refresh_interval_days(),
-        id="cache_refresh",
-    )
+    scheduler.add_job(cache.refresh, "interval", days=state_store.get_refresh_interval_days(), id="cache_refresh")
     scheduler.start()
 
     application = Application.builder().token(BOT_TOKEN).build()
@@ -2099,14 +1986,14 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("filters", filters_command))
     application.add_handler(CommandHandler("list", list_command))
     application.add_handler(CommandHandler("refresh12345", force_refresh_command))
+    application.add_handler(CommandHandler("cancel", cancel_command))
 
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_text_message))
-
     application.add_error_handler(error_handler)
 
     def signal_handler(signum, frame):
-        logger.info("Получен сигнал завершения (%s), сохраняю состояние и останавливаюсь...", signum)
+        logger.info("Получен сигнал завершения (%s), сохраняю состояние...", signum)
         try:
             state_store.flush_now()
         except Exception:
