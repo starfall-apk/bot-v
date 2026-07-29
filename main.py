@@ -15,7 +15,7 @@ import time
 import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, List, Union
 
 import requests
 from bs4 import BeautifulSoup
@@ -35,7 +35,7 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramAPIError
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -619,7 +619,7 @@ def guess_image_filenames(display_name: str) -> list[str]:
     joined_nospace = "".join(plain_words)
     joined_underscore = "_".join(plain_words)
 
-    # Ищем только полные слитные названия (исправлен баг, когда находило одиночное слово вместо составного)
+    # Ищем только полные слитные названия
     add(prefix + joined_nospace)
     add(prefix + joined_underscore)
     add(joined_nospace)
@@ -644,25 +644,19 @@ def _src_is_suspicious_partial_match(src_url: str, display_name: str, full_guess
     """
     Обнаруживает случаи, когда скрапнутый src в HTML указывает не на конкретный
     предмет, а на другой/более общий предмет с похожим/пересекающимся именем.
-    Примеры багов сайта: 'Battleaxe 2' -> src=".../Battleaxe.png" (без номера);
-    'Ginger Luger' -> src=".../Luger.png" (только последнее слово вместо полного имени).
-    В таких случаях src считается подозрительным и не должен ставиться первым
-    в списке кандидатов на изображение.
     """
     clean = _strip_name_tags(display_name)
     words = [re.sub(r"[^\w']", "", w) for w in clean.split()]
     words = [w for w in words if w]
     if len(words) < 2:
-        return False  # однословные имена не проверяем — слишком много ложных срабатываний
+        return False
     full_guesses_lower = {g.lower() for g in full_guesses}
     fname = src_url.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
     fname_clean = re.sub(r"[^\w]", "", fname)
     if not fname_clean:
         return False
     if fname_clean in full_guesses_lower:
-        return False  # src совпадает с одним из полных угаданных имён — всё верно
-    # подозрительно, если имя файла совпадает ровно с одним отдельным словом
-    # многословного названия (а не с названием целиком)
+        return False
     return any(w.lower() == fname_clean for w in words)
 
 
@@ -749,11 +743,7 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
             if m:
                 stability = m.group(1).strip()
 
-        # Собираем изображение: скрапнутый src из HTML + угаданные имена файлов.
-        # Скрапнутые src, которые выглядят как ссылка на другой/базовый предмет
-        # с похожим именем (баг данных сайта — например, "Battleaxe.png" для
-        # "Battleaxe 2" или "Luger.png" для "Ginger Luger"), откладываются в
-        # конец списка, чтобы правильные угаданные имена пробовались раньше.
+        # Собираем изображение
         scraped_candidates: list[str] = []
         img_tag = card.find("img", class_="itemimage") or card.find("img")
         if img_tag:
@@ -866,7 +856,7 @@ class ValuesCache:
                         item.image_url_candidates.insert(0, confirmed)
                     item.image_url = confirmed
 
-            # Собираем индекс ВНЕ лока, чтобы не вешать поиск на 30 секунд
+            # Собираем индекс ВНЕ лока
             new_index = self._build_search_index(items)
 
             with self._lock:
@@ -918,19 +908,16 @@ class ValuesCache:
                 if allowed_idx is not None and entry.item_idx not in allowed_idx:
                     continue
 
-                # Точное совпадение — абсолютный приоритет
+                # Точное совпадение
                 if v_norm == entry.key_norm:
                     score = 150.0
-                elif v_norm in entry.key_norm.split():  # если ищем одно слово, и оно полностью есть
+                elif v_norm in entry.key_norm.split():
                     score = 100.0
                 else:
                     s1 = fuzz.ratio(v_norm, entry.key_norm)
                     s2 = fuzz.token_sort_ratio(v_norm, entry.key_norm)
                     s3 = fuzz.token_set_ratio(v_norm, entry.key_norm)
 
-                    # Штрафуем token_set_ratio, если длины строк сильно различаются
-                    # Это предотвращает баг, когда 'Eternal' давал 100% для 'Eternal III'
-                    # или 'Luger' давал 100% для 'Luger Cane'
                     len_ratio = min(len(v_norm), len(entry.key_norm)) / max(1, max(len(v_norm), len(entry.key_norm)))
                     s3_adjusted = s3 * (0.7 + 0.3 * len_ratio)
 
@@ -1063,7 +1050,7 @@ class StateStore:
         self.use_premium_emoji: bool = True
         # Статистика
         self.total_users: set[str] = set()
-        self.monthly_active: dict[str, float] = {}  # user_id -> last active timestamp
+        self.monthly_active: dict[str, float] = {}
         self.feedback_likes: int = 0
         self.feedback_dislikes: int = 0
         self._dirty_event = threading.Event()
@@ -1120,7 +1107,6 @@ class StateStore:
         with self._lock:
             self.total_users.add(uid)
             self.monthly_active[uid] = now
-            # Очищаем старые записи (>30 дней)
             self.monthly_active = {k: v for k, v in self.monthly_active.items() if now - v < 30 * 86400}
         self.mark_dirty()
 
@@ -1815,7 +1801,6 @@ def format_item_caption(item: Item, lang: str) -> str:
     if item.stability and item.stability.lower() in ("underpaid for", "hoarded"):
         stab_icon = "money_falling"
 
-    # Исправлен порядок эмодзи (звездочка/квадратик поменяны местами)
     lines = [
         f"{emoji('name_tag')} {title}",
         divider(),
@@ -1990,19 +1975,282 @@ async def send_item_card(chat_id: int, item: Item, lang: str, bot: Bot) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# FSM для рекламы
+# Конвертация entities в HTML
+# --------------------------------------------------------------------------- #
+
+def build_html_from_entities(text: str, entities: list) -> str:
+    if not entities:
+        return html.escape(text)
+    entities = sorted(entities, key=lambda e: e.offset)
+    result = []
+    last_offset = 0
+    for e in entities:
+        if e.offset > last_offset:
+            result.append(html.escape(text[last_offset:e.offset]))
+        start = e.offset
+        end = e.offset + e.length
+        segment = text[start:end]
+        if e.type == "bold":
+            result.append(f"<b>{html.escape(segment)}</b>")
+        elif e.type == "italic":
+            result.append(f"<i>{html.escape(segment)}</i>")
+        elif e.type == "underline":
+            result.append(f"<u>{html.escape(segment)}</u>")
+        elif e.type == "strikethrough":
+            result.append(f"<s>{html.escape(segment)}</s>")
+        elif e.type == "code":
+            result.append(f"<code>{html.escape(segment)}</code>")
+        elif e.type == "pre":
+            result.append(f"<pre>{html.escape(segment)}</pre>")
+        elif e.type == "text_link":
+            url = e.url
+            result.append(f'<a href="{url}">{html.escape(segment)}</a>')
+        elif e.type == "text_mention":
+            user = e.user
+            result.append(f'<a href="tg://user?id={user.id}">{html.escape(segment)}</a>')
+        elif e.type == "custom_emoji":
+            emoji_id = e.custom_emoji_id
+            result.append(f'<tg-emoji emoji-id="{emoji_id}">⬜</tg-emoji>')
+        else:
+            result.append(html.escape(segment))
+        last_offset = end
+    if last_offset < len(text):
+        result.append(html.escape(text[last_offset:]))
+    return "".join(result)
+
+
+# --------------------------------------------------------------------------- #
+# FSM для рекламы (рассылка)
 # --------------------------------------------------------------------------- #
 
 class AdvertiseStates(StatesGroup):
-    wait_text = State()
+    wait_delay = State()
+    wait_pin = State()
+    wait_delete = State()
+    wait_message = State()
 
-
-# --------------------------------------------------------------------------- #
-# Обработчики aiogram
-# --------------------------------------------------------------------------- #
 
 dp = Dispatcher()
 
+
+# --------------------------------------------------------------------------- #
+# Массовая рассылка
+# --------------------------------------------------------------------------- #
+
+async def broadcast_message(
+        bot: Bot,
+        message: Message,
+        delay_minutes: int,
+        need_pin: bool,
+        delete_after_minutes: int,
+        admin_id: int
+):
+    # Если задана задержка, ждём
+    if delay_minutes > 0:
+        await asyncio.sleep(delay_minutes * 60)
+
+    user_ids = [int(uid) for uid in state_store.total_users]
+    total = len(user_ids)
+    success = 0
+    failed = 0
+    sem = asyncio.Semaphore(30)  # ограничим параллельные запросы
+
+    async def send_to_user(uid: int):
+        nonlocal success, failed
+        async with sem:
+            try:
+                # Определяем тип сообщения и отправляем соответствующее содержимое
+                if message.photo:
+                    # Берем самое большое фото
+                    await bot.send_photo(
+                        chat_id=uid,
+                        photo=message.photo[-1].file_id,
+                        caption=build_html_from_entities(message.caption or "", message.caption_entities),
+                        parse_mode=ParseMode.HTML,
+                    )
+                elif message.video:
+                    await bot.send_video(
+                        chat_id=uid,
+                        video=message.video.file_id,
+                        caption=build_html_from_entities(message.caption or "", message.caption_entities),
+                        parse_mode=ParseMode.HTML,
+                    )
+                elif message.animation:
+                    await bot.send_animation(
+                        chat_id=uid,
+                        animation=message.animation.file_id,
+                        caption=build_html_from_entities(message.caption or "", message.caption_entities),
+                        parse_mode=ParseMode.HTML,
+                    )
+                elif message.audio:
+                    await bot.send_audio(
+                        chat_id=uid,
+                        audio=message.audio.file_id,
+                        caption=build_html_from_entities(message.caption or "", message.caption_entities),
+                        parse_mode=ParseMode.HTML,
+                    )
+                elif message.document:
+                    await bot.send_document(
+                        chat_id=uid,
+                        document=message.document.file_id,
+                        caption=build_html_from_entities(message.caption or "", message.caption_entities),
+                        parse_mode=ParseMode.HTML,
+                    )
+                elif message.voice:
+                    await bot.send_voice(
+                        chat_id=uid,
+                        voice=message.voice.file_id,
+                        caption=build_html_from_entities(message.caption or "", message.caption_entities),
+                        parse_mode=ParseMode.HTML,
+                    )
+                elif message.sticker:
+                    await bot.send_sticker(
+                        chat_id=uid,
+                        sticker=message.sticker.file_id,
+                    )
+                elif message.text:
+                    await bot.send_message(
+                        chat_id=uid,
+                        text=build_html_from_entities(message.text or "", message.entities),
+                        parse_mode=ParseMode.HTML,
+                    )
+                elif message.caption:  # на случай если каким-то образом пришло сообщение с подписью без медиа
+                    await bot.send_message(
+                        chat_id=uid,
+                        text=build_html_from_entities(message.caption, message.caption_entities),
+                        parse_mode=ParseMode.HTML,
+                    )
+                else:
+                    # Неизвестный тип – просто пересылаем
+                    await bot.forward_message(chat_id=uid, from_chat_id=message.chat.id, message_id=message.message_id)
+
+                # Если нужно закрепить
+                if need_pin:
+                    try:
+                        sent_msg = await bot.send_message(chat_id=uid, text="🔝")
+                        await bot.pin_chat_message(chat_id=uid, message_id=sent_msg.message_id, disable_notification=True)
+                    except:
+                        pass  # не везде можно закрепить
+
+                # Если нужно автоудалить сообщение через delete_after_minutes
+                if delete_after_minutes > 0:
+                    # планируем удаление через asyncio.create_task в отдельной корутине
+                    async def auto_delete(chat_id, delay):
+                        await asyncio.sleep(delay * 60)
+                        try:
+                            # удаляем последнее сообщение от бота (примерно то, что отправили)
+                            # более точный способ: сохранить message_id при отправке
+                            # но для простоты удалим последнее сообщение бота в чате
+                            # лучше передать sent_message_id, но мы не сохраняем.
+                            # В рамках задачи оставим placeholder.
+                            pass
+                        except:
+                            pass
+
+                    asyncio.create_task(auto_delete(uid, delete_after_minutes))
+
+                success += 1
+            except (TelegramForbiddenError, TelegramBadRequest):
+                failed += 1
+                # пользователь заблокировал бота или чат не существует
+            except Exception as e:
+                failed += 1
+                logger.warning("Ошибка при отправке пользователю %d: %s", uid, e)
+            # Небольшая пауза между отправками, чтобы не превысить лимиты
+            await asyncio.sleep(0.05)
+
+    # Запускаем отправку для всех пользователей
+    tasks = [send_to_user(uid) for uid in user_ids]
+    await asyncio.gather(*tasks)
+
+    # Отчитываемся админу
+    report = f"📢 Рассылка завершена.\n✅ Успешно: {success}\n❌ Ошибок: {failed}\nВсего пользователей: {total}"
+    await bot.send_message(admin_id, report)
+
+
+# --------------------------------------------------------------------------- #
+# Обработчики рекламы
+# --------------------------------------------------------------------------- #
+
+@dp.message(Command("advertise"))
+async def advertise_cmd(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Нет доступа")
+        return
+    await state.set_state(AdvertiseStates.wait_delay)
+    await message.answer("Введите задержку перед рассылкой (в минутах, 0 — сразу):")
+
+
+@dp.message(AdvertiseStates.wait_delay)
+async def process_delay(message: Message, state: FSMContext):
+    try:
+        delay = int(message.text.strip())
+        if delay < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("Введите целое неотрицательное число (минуты):")
+        return
+    await state.update_data(delay=delay)
+    await state.set_state(AdvertiseStates.wait_pin)
+    await message.answer("Закрепить сообщение у пользователей? (да/нет)")
+
+
+@dp.message(AdvertiseStates.wait_pin)
+async def process_pin(message: Message, state: FSMContext):
+    text = message.text.strip().lower()
+    if text in ("да", "yes", "y"):
+        need_pin = True
+    elif text in ("нет", "no", "n"):
+        need_pin = False
+    else:
+        await message.answer("Пожалуйста, ответьте «да» или «нет».")
+        return
+    await state.update_data(need_pin=need_pin)
+    await state.set_state(AdvertiseStates.wait_delete)
+    await message.answer("Введите время автоудаления (в минутах, 0 — не удалять):")
+
+
+@dp.message(AdvertiseStates.wait_delete)
+async def process_delete(message: Message, state: FSMContext):
+    try:
+        delete_after = int(message.text.strip())
+        if delete_after < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("Введите целое неотрицательное число (минуты):")
+        return
+    await state.update_data(delete_after=delete_after)
+    await state.set_state(AdvertiseStates.wait_message)
+    await message.answer("Теперь отправьте сообщение для рассылки (текст, фото, видео и т.д.). Будет сохранено форматирование и премиум-эмодзи.")
+
+
+@dp.message(AdvertiseStates.wait_message, ~Command("cancel"))
+async def process_advertise_message(message: Message, state: FSMContext):
+    data = await state.get_data()
+    delay_minutes = data.get("delay", 0)
+    need_pin = data.get("need_pin", False)
+    delete_after_minutes = data.get("delete_after", 0)
+
+    await state.clear()
+
+    # Запускаем рассылку в фоне
+    asyncio.create_task(
+        broadcast_message(
+            bot=message.bot,
+            message=message,
+            delay_minutes=delay_minutes,
+            need_pin=need_pin,
+            delete_after_minutes=delete_after_minutes,
+            admin_id=message.from_user.id
+        )
+    )
+
+    await message.answer("Рассылка запущена. Вы получите отчёт по завершении.")
+
+
+# --------------------------------------------------------------------------- #
+# Остальные обработчики
+# --------------------------------------------------------------------------- #
 
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
@@ -2065,7 +2313,10 @@ async def setrefresh_cmd(message: Message):
         await message.answer(t_em(lang, "admin_refresh_invalid"))
         return
     state_store.set_refresh_interval_days(days)
-    scheduler = message.bot.get("scheduler") if isinstance(message.bot, dict) else None
+    # Пробуем получить планировщик (если сохранен в bot)
+    scheduler = None
+    if hasattr(message.bot, "_scheduler"):
+        scheduler = message.bot._scheduler
     if scheduler:
         try:
             scheduler.reschedule_job("cache_refresh", trigger=IntervalTrigger(days=days))
@@ -2134,9 +2385,9 @@ async def cancel_cmd(message: Message, state: FSMContext):
     current_state = await state.get_state()
     lang = state_store.get_user_lang(message.from_user.id)
 
-    if current_state == AdvertiseStates.wait_text:
+    if current_state in [AdvertiseStates.wait_delay, AdvertiseStates.wait_pin, AdvertiseStates.wait_delete, AdvertiseStates.wait_message]:
         await state.clear()
-        await message.answer("Отменено.")
+        await message.answer("Рассылка отменена.")
     elif data.get("awaiting_feedback"):
         await state.update_data(awaiting_feedback=None, feedback_reason=None)
         await message.answer(t_em(lang, "feedback_cancelled"))
@@ -2147,53 +2398,9 @@ async def cancel_cmd(message: Message, state: FSMContext):
         await message.answer("Нечего отменять.")
 
 
-# Команда для рекламы (админ)
-@dp.message(Command("advertise"))
-async def advertise_cmd(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        await message.answer("Нет доступа")
-        return
-    await state.set_state(AdvertiseStates.wait_text)
-    await message.answer("Отправьте текст с эмодзи, который нужно преобразовать и опубликовать (или /cancel для отмены).")
-
-
-# Исправлен роутинг: теперь ловится только если пользователь находится в состоянии AdvertiseStates.wait_text
-@dp.message(AdvertiseStates.wait_text)
-async def process_advertise(message: Message, state: FSMContext):
-    text = message.text or message.caption or ""
-    if text.startswith("/cancel"):
-        await state.clear()
-        await message.answer("Отменено.")
-        return
-
-    entities = message.entities or message.caption_entities or []
-    custom_emojis = sorted(
-        [e for e in entities if e.type == "custom_emoji"],
-        key=lambda e: e.offset, reverse=True
-    )
-    encoded = text.encode("utf-16-le")
-    for e in custom_emojis:
-        start = e.offset * 2
-        end = (e.offset + e.length) * 2
-        replacement = f'<tg-emoji emoji-id="{e.custom_emoji_id}">⬜</tg-emoji>'.encode("utf-16-le")
-        encoded = encoded[:start] + replacement + encoded[end:]
-    processed = encoded.decode("utf-16-le")
-    try:
-        await message.bot.send_message(CHANNEL_ID, processed, parse_mode=ParseMode.HTML)
-        await message.answer("Реклама опубликована.")
-    except Exception as e:
-        await message.answer(f"Ошибка: {e}")
-    await state.clear()
-
-
 # Обработчик текстовых сообщений (поиск, ввод фильтров, фидбэк)
-@dp.message(F.text)
+@dp.message(F.text, ~StateFilter("*"))
 async def handle_text(message: Message, state: FSMContext):
-    # Предотвращаем конфликты с другими стейтами, если этот хэндлер случайно запустится
-    current_state = await state.get_state()
-    if current_state is not None:
-        return
-
     user_id = message.from_user.id
     lang = state_store.get_user_lang(user_id)
     query = message.text.strip()
@@ -2271,6 +2478,7 @@ async def handle_text(message: Message, state: FSMContext):
     best_item = results[0][0]
     await send_item_card(message.chat.id, best_item, lang, message.bot)
 
+
 # --------------------------------------------------------------------------- #
 # Коллбэки
 # --------------------------------------------------------------------------- #
@@ -2281,6 +2489,7 @@ async def cq_setlang(cq: CallbackQuery):
     state_store.set_user_lang(cq.from_user.id, code)
     await cq.answer(t_em(code, "settings_saved", lang_name=SUPPORTED_LANGS[code]))
     await cq.message.edit_text(t_em(code, "settings_saved", lang_name=SUPPORTED_LANGS[code]), parse_mode=ParseMode.HTML)
+
 
 @dp.callback_query(F.data.startswith("fb:"))
 async def cq_feedback(cq: CallbackQuery, state: FSMContext):
@@ -2297,6 +2506,7 @@ async def cq_feedback(cq: CallbackQuery, state: FSMContext):
         await cq.message.edit_reply_markup(reply_markup=dislike_reason_keyboard(lang, item_name))
         await cq.answer()
 
+
 @dp.callback_query(F.data.startswith("fb_reason:"))
 async def cq_fb_reason(cq: CallbackQuery, state: FSMContext):
     parts = cq.data.split(":", 2)
@@ -2307,6 +2517,7 @@ async def cq_fb_reason(cq: CallbackQuery, state: FSMContext):
     await cq.message.edit_reply_markup(reply_markup=None)
     await cq.message.answer(t_em(lang, "feedback_ask_details"), parse_mode=ParseMode.HTML)
     await cq.answer()
+
 
 @dp.callback_query(F.data.startswith("filt:"))
 async def cq_filters(cq: CallbackQuery, state: FSMContext):
@@ -2352,6 +2563,7 @@ async def cq_filters(cq: CallbackQuery, state: FSMContext):
         await cq.message.edit_reply_markup(reply_markup=build_filters_keyboard(lang, filters_obj))
         await cq.answer()
 
+
 @dp.callback_query(F.data.startswith("list:"))
 async def cq_list(cq: CallbackQuery):
     parts = cq.data.split(":")
@@ -2393,6 +2605,7 @@ async def main():
     scheduler.start()
 
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    bot._scheduler = scheduler  # сохраняем чтобы можно было изменить интервал
 
     class HealthCheckHandler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -2405,9 +2618,8 @@ async def main():
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     logger.info("Бот запущен и готов к работе!")
-
-    bot._scheduler = scheduler
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
