@@ -618,24 +618,25 @@ def guess_image_filenames(display_name: str) -> list[str]:
 
     joined_nospace = "".join(plain_words)
     joined_underscore = "_".join(plain_words)
-    first_word = plain_words[0] if plain_words else ""
-    last_word = plain_words[-1] if plain_words else ""
+    
+    # Ищем только полные слитные названия (исправлен баг, когда находило одиночное слово вместо составного)
     add(prefix + joined_nospace)
     add(prefix + joined_underscore)
-    add(prefix + last_word)
-    add(prefix + first_word)
     add(joined_nospace)
     add(joined_underscore)
-    add(last_word)
-    add(first_word)
+    
     safe_name = re.sub(r"[^\w\s-]", "", clean).strip().replace(" ", "_")
     add(safe_name)
+    
     for i, w in enumerate(plain_words):
         if w.lower() in ROMAN_NUMERALS:
             new_words = plain_words.copy()
             new_words[i] = str(ROMAN_NUMERALS[w.lower()])
+            add(prefix + "".join(new_words))
+            add(prefix + "_".join(new_words))
             add("".join(new_words))
             add("_".join(new_words))
+            
     return [c for c in candidates if c]
 
 
@@ -1638,7 +1639,6 @@ def refresh_item_image_candidates(item: Item) -> list[str]:
 
 
 def download_item_image(item: Item) -> Optional[Image.Image]:
-    # Безусловно пробуем известные/найденные URL, без фильтрации по словам (исправлен баг, когда ссылка кэша отклонялась)
     urls_to_try = []
     if item.image_url:
         urls_to_try.append(item.image_url)
@@ -1655,7 +1655,6 @@ def download_item_image(item: Item) -> Optional[Image.Image]:
                 state_store.save_known_image_url(normalize_text(item.name), url)
             return img
             
-    # Если ничего не сработало, пробуем пересобрать и обновить напрямую
     fresh_candidates = refresh_item_image_candidates(item)
     for fresh_url in fresh_candidates:
         if fresh_url in urls_to_try:
@@ -1762,11 +1761,12 @@ def format_item_caption(item: Item, lang: str) -> str:
     if item.stability and item.stability.lower() in ("underpaid for", "hoarded"):
         stab_icon = "money_falling"
 
+    # Исправлен порядок эмодзи (звездочка/квадратик поменяны местами)
     lines = [
-        f"{title_icon} {title}",
+        f"{plate} {title}",
         divider(),
         f"{emoji('value')} <b>{t_em(lang, 'value_label')}:</b> ⛁ <b>{item.value_display or 'N/A'}</b>",
-        f"{emoji('name_tag')} <b>{t_em(lang, 'status_label')}:</b> {plate}",
+        f"{emoji('name_tag')} <b>{t_em(lang, 'status_label')}:</b> {title_icon} {rarity_label_localized(lang, item.category_slug)}",
         f"{emoji(stab_icon)} <b>{t_em(lang, 'stability_label')}:</b> {stab_txt}",
     ]
     if item.origin:
@@ -1986,7 +1986,7 @@ async def status_cmd(message: Message):
         text = t_em(lang, "status_report", count=count, last_update=last_update, error=cache.last_error)
     else:
         text = t_em(lang, "status_report_ok", count=count, last_update=last_update)
-    # Добавляем статистику для админа
+    
     if message.from_user.id == ADMIN_ID:
         text += "\n\n" + state_store.get_stats_text()
     await message.answer(text, parse_mode=ParseMode.HTML)
@@ -2011,7 +2011,7 @@ async def setrefresh_cmd(message: Message):
         await message.answer(t_em(lang, "admin_refresh_invalid"))
         return
     state_store.set_refresh_interval_days(days)
-    scheduler = message.bot.get("scheduler") if isinstance(message.bot, dict) else None # В случае если scheduler запущен
+    scheduler = message.bot.get("scheduler") if isinstance(message.bot, dict) else None
     if scheduler:
         try:
             scheduler.reschedule_job("cache_refresh", trigger=IntervalTrigger(days=days))
@@ -2077,10 +2077,18 @@ async def force_refresh_cmd(message: Message):
 @dp.message(Command("cancel"))
 async def cancel_cmd(message: Message, state: FSMContext):
     data = await state.get_data()
-    if data.get("awaiting_feedback"):
+    current_state = await state.get_state()
+    lang = state_store.get_user_lang(message.from_user.id)
+    
+    if current_state == AdvertiseStates.wait_text:
+        await state.clear()
+        await message.answer("Отменено.")
+    elif data.get("awaiting_feedback"):
         await state.update_data(awaiting_feedback=None, feedback_reason=None)
-        lang = state_store.get_user_lang(message.from_user.id)
         await message.answer(t_em(lang, "feedback_cancelled"))
+    elif data.get("awaiting_filter_input"):
+        await state.update_data(awaiting_filter_input=None)
+        await message.answer("Отменено.")
     else:
         await message.answer("Нечего отменять.")
 
@@ -2092,12 +2100,18 @@ async def advertise_cmd(message: Message, state: FSMContext):
         await message.answer("Нет доступа")
         return
     await state.set_state(AdvertiseStates.wait_text)
-    await message.answer("Отправьте текст с эмодзи, который нужно преобразовать и опубликовать.")
+    await message.answer("Отправьте текст с эмодзи, который нужно преобразовать и опубликовать (или /cancel для отмены).")
 
 
-@dp.message(F.text, StateFilter(AdvertiseStates.wait_text))
+# Исправлен роутинг: теперь ловится только если пользователь находится в состоянии AdvertiseStates.wait_text
+@dp.message(AdvertiseStates.wait_text)
 async def process_advertise(message: Message, state: FSMContext):
     text = message.text or message.caption or ""
+    if text.startswith("/cancel"):
+        await state.clear()
+        await message.answer("Отменено.")
+        return
+        
     entities = message.entities or message.caption_entities or []
     custom_emojis = sorted(
         [e for e in entities if e.type == "custom_emoji"],
@@ -2121,6 +2135,11 @@ async def process_advertise(message: Message, state: FSMContext):
 # Обработчик текстовых сообщений (поиск, ввод фильтров, фидбэк)
 @dp.message(F.text)
 async def handle_text(message: Message, state: FSMContext):
+    # Предотвращаем конфликты с другими стейтами, если этот хэндлер случайно запустится
+    current_state = await state.get_state()
+    if current_state is not None:
+        return
+        
     user_id = message.from_user.id
     lang = state_store.get_user_lang(user_id)
     query = message.text.strip()
@@ -2138,52 +2157,55 @@ async def handle_text(message: Message, state: FSMContext):
         user = message.from_user
         msg = (
             f"📩 <b>Фидбэк от пользователя</b>\n"
-            f"👤 {user.mention_html()} (ID: {user.id})\n"
-            f"🔹 Предмет: <b>{html.escape(item_name)}</b>\n"
-            f"🔹 Причина: {reason}\n"
-            f"📝 Комментарий: {html.escape(feedback_text)}"
+            f"👤 {user.full_name} (@{user.username or 'без_юзернейма'} | {user.id})\n"
+            f"🏷 <b>Предмет:</b> {item_name}\n"
+            f"❓ <b>Причина:</b> {reason}\n"
+            f"💬 <b>Комментарий:</b> {html.escape(feedback_text)}"
         )
         try:
-            await message.bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode=ParseMode.HTML)
-        except Exception as e:
-            logger.error("Не удалось отправить фидбэк админу: %s", e)
+            await message.bot.send_message(ADMIN_ID, msg, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
         await state.update_data(awaiting_feedback=None, feedback_reason=None)
-        await message.answer(t_em(lang, "feedback_sent"))
+        await message.answer(t_em(lang, "feedback_sent"), parse_mode=ParseMode.HTML)
         return
 
-    # Ввод числа для фильтра
-    if data.get("awaiting_filter_input") in ("min", "max"):
+    # Ввод данных для фильтров
+    if data.get("awaiting_filter_input"):
+        filter_kind = data["awaiting_filter_input"]
         try:
-            value = int(query)
+            val = int(query)
         except ValueError:
             await message.answer(t_em(lang, "filters_invalid_number"))
             return
+            
         filters_obj = state_store.get_user_filters(user_id)
-        if data["awaiting_filter_input"] == "min":
-            if value < 0:
+        if filter_kind == "min":
+            if val < 0:
                 await message.answer(t_em(lang, "filters_invalid_negative"))
                 return
-            if filters_obj.max_value != -1 and value > filters_obj.max_value:
+            if filters_obj.max_value != -1 and val > filters_obj.max_value:
                 await message.answer(t_em(lang, "filters_invalid_range"))
                 return
-            filters_obj.min_value = value
-        else:
-            if value != -1 and value < 0:
+            filters_obj.min_value = val
+        elif filter_kind == "max":
+            if val < -1:
                 await message.answer(t_em(lang, "filters_invalid_negative"))
                 return
-            if value != -1 and value < filters_obj.min_value:
+            if val != -1 and val < filters_obj.min_value:
                 await message.answer(t_em(lang, "filters_invalid_range"))
                 return
-            filters_obj.max_value = value
+            filters_obj.max_value = val
+
         state_store.set_user_filters(user_id, filters_obj)
         await state.update_data(awaiting_filter_input=None)
-        await message.answer(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
+        await message.answer(t_em(lang, "filters_saved"), parse_mode=ParseMode.HTML,
                              reply_markup=build_filters_keyboard(lang, filters_obj))
         return
 
-    # Поиск предмета
+    # Обычный Поиск
     if cache.size == 0:
-        await message.answer(t_em(lang, "cache_empty"))
+        await message.answer(t_em(lang, "cache_empty"), parse_mode=ParseMode.HTML)
         return
 
     filters_obj = state_store.get_user_filters(user_id)
@@ -2192,144 +2214,111 @@ async def handle_text(message: Message, state: FSMContext):
         await message.answer(t_em(lang, "not_found", query=html.escape(query)), parse_mode=ParseMode.HTML)
         return
 
-    best_item, _score = results[0]
+    best_item = results[0][0]
     await send_item_card(message.chat.id, best_item, lang, message.bot)
 
+# --------------------------------------------------------------------------- #
+# Коллбэки
+# --------------------------------------------------------------------------- #
 
-# Callback-обработчик
-@dp.callback_query()
-async def callback_handler(callback: CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
+@dp.callback_query(F.data.startswith("setlang:"))
+async def cq_setlang(cq: CallbackQuery):
+    code = cq.data.split(":")[1]
+    state_store.set_user_lang(cq.from_user.id, code)
+    await cq.answer(t_em(code, "settings_saved", lang_name=SUPPORTED_LANGS[code]))
+    await cq.message.edit_text(t_em(code, "settings_saved", lang_name=SUPPORTED_LANGS[code]), parse_mode=ParseMode.HTML)
+
+@dp.callback_query(F.data.startswith("fb:"))
+async def cq_feedback(cq: CallbackQuery, state: FSMContext):
+    parts = cq.data.split(":", 2)
+    action = parts[1]
+    item_name = parts[2]
+    lang = state_store.get_user_lang(cq.from_user.id)
+    if action == "like":
+        state_store.add_feedback(True)
+        await cq.answer(t_em(lang, "feedback_like"))
+        await cq.message.edit_reply_markup(reply_markup=None)
+    elif action == "dislike":
+        state_store.add_feedback(False)
+        await cq.message.edit_reply_markup(reply_markup=dislike_reason_keyboard(lang, item_name))
+        await cq.answer()
+
+@dp.callback_query(F.data.startswith("fb_reason:"))
+async def cq_fb_reason(cq: CallbackQuery, state: FSMContext):
+    parts = cq.data.split(":", 2)
+    reason = parts[1]
+    item_name = parts[2]
+    lang = state_store.get_user_lang(cq.from_user.id)
+    await state.update_data(awaiting_feedback=item_name, feedback_reason=reason)
+    await cq.message.edit_reply_markup(reply_markup=None)
+    await cq.message.answer(t_em(lang, "feedback_ask_details"), parse_mode=ParseMode.HTML)
+    await cq.answer()
+
+@dp.callback_query(F.data.startswith("filt:"))
+async def cq_filters(cq: CallbackQuery, state: FSMContext):
+    parts = cq.data.split(":")
+    action = parts[1]
+    user_id = cq.from_user.id
     lang = state_store.get_user_lang(user_id)
-    data = callback.data
-    await callback.answer()
+    filters_obj = state_store.get_user_filters(user_id)
 
-    try:
-        if data.startswith("fb:like:"):
-            state_store.add_feedback(True)
-            await callback.message.answer(t_em(lang, "feedback_like"))
-            return
-        if data.startswith("fb:dislike:"):
-            state_store.add_feedback(False)
-            item_name = data.split(":", 2)[2]
-            try:
-                await callback.message.edit_reply_markup(
-                    reply_markup=dislike_reason_keyboard(lang, item_name))
-            except TelegramBadRequest:
-                await callback.message.answer(
-                    t_em(lang, "feedback_dislike"),
-                    reply_markup=dislike_reason_keyboard(lang, item_name))
-            return
-        if data.startswith("fb_reason:"):
-            parts = data.split(":", 2)
-            reason = parts[1]
-            item_name = parts[2] if len(parts) > 2 else ""
-            await state.update_data(awaiting_feedback=item_name, feedback_reason=reason)
-            await callback.message.answer(t_em(lang, "feedback_ask_details"), parse_mode=ParseMode.HTML)
-            try:
-                await callback.message.edit_reply_markup(reply_markup=None)
-            except Exception:
-                pass
-            return
+    if action == "ask_min":
+        await state.update_data(awaiting_filter_input="min")
+        await cq.message.answer(t_em(lang, "filters_ask_min"), parse_mode=ParseMode.HTML)
+        await cq.answer()
+    elif action == "ask_max":
+        await state.update_data(awaiting_filter_input="max")
+        await cq.message.answer(t_em(lang, "filters_ask_max"), parse_mode=ParseMode.HTML)
+        await cq.answer()
+    elif action == "rarity_menu":
+        await cq.message.edit_reply_markup(reply_markup=build_rarity_menu_keyboard(lang, filters_obj))
+        await cq.answer()
+    elif action == "stability_menu":
+        await cq.message.edit_reply_markup(reply_markup=build_stability_menu_keyboard(lang, filters_obj))
+        await cq.answer()
+    elif action == "set_rarity":
+        filters_obj.rarity_slug = parts[2]
+        state_store.set_user_filters(user_id, filters_obj)
+        await cq.message.edit_reply_markup(reply_markup=build_rarity_menu_keyboard(lang, filters_obj))
+        await cq.answer()
+    elif action == "set_stability":
+        filters_obj.stability_key = parts[2]
+        state_store.set_user_filters(user_id, filters_obj)
+        await cq.message.edit_reply_markup(reply_markup=build_stability_menu_keyboard(lang, filters_obj))
+        await cq.answer()
+    elif action == "reset":
+        state_store.reset_user_filters(user_id)
+        filters_obj = state_store.get_user_filters(user_id)
+        await cq.message.edit_reply_markup(reply_markup=build_filters_keyboard(lang, filters_obj))
+        await cq.answer()
+    elif action == "apply":
+        await cq.message.edit_text(t_em(lang, "filters_applied"), parse_mode=ParseMode.HTML)
+        await cq.answer()
+    elif action == "back":
+        await cq.message.edit_reply_markup(reply_markup=build_filters_keyboard(lang, filters_obj))
+        await cq.answer()
 
-        if data.startswith("setlang:"):
-            new_lang = data.split(":")[1]
-            if new_lang in SUPPORTED_LANGS:
-                state_store.set_user_lang(user_id, new_lang)
-                lang = new_lang
-                await callback.message.edit_text(
-                    t_em(lang, "settings_saved", lang_name=SUPPORTED_LANGS[new_lang]),
-                    parse_mode=ParseMode.HTML)
-            return
-
-        if data.startswith("filt:"):
-            action = data[5:]
-            filters_obj = state_store.get_user_filters(user_id)
-
-            if action == "ask_min":
-                await state.update_data(awaiting_filter_input="min")
-                await callback.message.edit_text(t_em(lang, "filters_ask_min"), parse_mode=ParseMode.HTML)
-                return
-            if action == "ask_max":
-                await state.update_data(awaiting_filter_input="max")
-                await callback.message.edit_text(t_em(lang, "filters_ask_max"), parse_mode=ParseMode.HTML)
-                return
-            if action == "rarity_menu":
-                await callback.message.edit_text(t_em(lang, "filters_rarity_title"), parse_mode=ParseMode.HTML,
-                                                 reply_markup=build_rarity_menu_keyboard(lang, filters_obj))
-                return
-            if action == "stability_menu":
-                await callback.message.edit_text(t_em(lang, "filters_stability_title"), parse_mode=ParseMode.HTML,
-                                                 reply_markup=build_stability_menu_keyboard(lang, filters_obj))
-                return
-            if action.startswith("set_rarity:"):
-                filters_obj.rarity_slug = action.split(":")[1]
-                state_store.set_user_filters(user_id, filters_obj)
-                await callback.message.edit_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
-                                                 reply_markup=build_filters_keyboard(lang, filters_obj))
-                return
-            if action.startswith("set_stability:"):
-                filters_obj.stability_key = action.split(":")[1]
-                state_store.set_user_filters(user_id, filters_obj)
-                await callback.message.edit_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
-                                                 reply_markup=build_filters_keyboard(lang, filters_obj))
-                return
-            if action == "reset":
-                state_store.reset_user_filters(user_id)
-                filters_obj = state_store.get_user_filters(user_id)
-                await callback.message.edit_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
-                                                 reply_markup=build_filters_keyboard(lang, filters_obj))
-                return
-            if action == "apply":
-                await callback.message.edit_text(t_em(lang, "filters_applied"), parse_mode=ParseMode.HTML)
-                return
-            if action == "back":
-                await callback.message.edit_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
-                                                 reply_markup=build_filters_keyboard(lang, filters_obj))
-                return
-
-        if data.startswith("list:"):
-            action = data.split(":")[1]
-            if action == "page":
-                page = int(data.split(":")[2])
-                filters_obj = state_store.get_user_filters(user_id)
-                items = cache.all_items(filters_obj)
-                if not items:
-                    await callback.message.edit_text(t_em(lang, "list_empty"), parse_mode=ParseMode.HTML)
-                    return
-                total_pages = max(1, math.ceil(len(items) / LIST_PAGE_SIZE))
-                text = render_list_page_text(lang, items, page, total_pages)
-                await callback.message.edit_text(text, parse_mode=ParseMode.HTML,
-                                                 reply_markup=build_list_keyboard(lang, page, total_pages))
-                return
-    except TelegramBadRequest as e:
-        logger.warning("BadRequest in callback: %s", e)
-    except Exception as e:
-        logger.exception("Ошибка в callback_handler: %s", e)
-
-
-# --------------------------------------------------------------------------- #
-# Сервер Healthcheck
-# --------------------------------------------------------------------------- #
-
-class HealthcheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"OK")
-        
-    def log_message(self, format, *args):
-        pass
-
-
-def run_healthcheck_server():
-    try:
-        server = ThreadingHTTPServer(("0.0.0.0", PORT), HealthcheckHandler)
-        logger.info("Healthcheck сервер запущен на порту %d", PORT)
-        server.serve_forever()
-    except Exception as e:
-        logger.error("Ошибка при запуске healthcheck сервера: %s", e)
+@dp.callback_query(F.data.startswith("list:"))
+async def cq_list(cq: CallbackQuery):
+    parts = cq.data.split(":")
+    if parts[1] == "noop":
+        await cq.answer()
+        return
+    page = int(parts[2])
+    user_id = cq.from_user.id
+    lang = state_store.get_user_lang(user_id)
+    filters_obj = state_store.get_user_filters(user_id)
+    items = cache.all_items(filters_obj)
+    if not items:
+        await cq.answer(t_em(lang, "list_empty"), show_alert=True)
+        return
+    total_pages = max(1, math.ceil(len(items) / LIST_PAGE_SIZE))
+    if page < 0 or page >= total_pages:
+        await cq.answer()
+        return
+    text = render_list_page_text(lang, items, page, total_pages)
+    await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=build_list_keyboard(lang, page, total_pages))
+    await cq.answer()
 
 
 # --------------------------------------------------------------------------- #
@@ -2338,48 +2327,33 @@ def run_healthcheck_server():
 
 async def main():
     ensure_fonts_downloaded()
-    
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    
-    logger.info("Восстановление состояния из Telegram-канала...")
-    if not state_store.load_from_channel():
-        logger.warning("Не удалось загрузить состояние из канала. Используется чистое состояние.")
-        
+    state_store.load_from_channel()
     state_store.start_debounce_worker()
     
-    scheduler = BackgroundScheduler()
-    days = state_store.get_refresh_interval_days()
-    scheduler.add_job(cache.refresh, IntervalTrigger(days=days), id="cache_refresh", next_run_time=None)
-    scheduler.start()
-    
-    # Чтобы прокинуть scheduler в команды
-    bot_data = {"scheduler": scheduler}
-    dp.workflow_data.update(bot_data)
-    
     if cache.size == 0:
-        logger.info("Кэш пуст, запускаю фоновое обновление...")
-        threading.Thread(target=cache.refresh, daemon=True).start()
-        
-    server_thread = threading.Thread(target=run_healthcheck_server, daemon=True)
-    server_thread.start()
+        logger.info("Кэш пуст, запускаю первичное обновление...")
+        cache.refresh()
+
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(cache.refresh, 'interval', days=state_store.get_refresh_interval_days(), id='cache_refresh')
+    scheduler.start()
+
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     
-    def handle_sigterm(*args):
-        logger.info("Получен SIGTERM. Сохраняю состояние и завершаю работу...")
-        state_store.flush_now()
-        sys.exit(0)
-        
-    signal.signal(signal.SIGTERM, handle_sigterm)
-    signal.signal(signal.SIGINT, handle_sigterm)
+    class HealthCheckHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b"Bot is running")
     
+    server = ThreadingHTTPServer(('0.0.0.0', PORT), HealthCheckHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
     logger.info("Бот запущен и готов к работе!")
-    try:
-        await dp.start_polling(bot, drop_pending_updates=True)
-    finally:
-        logger.info("Остановка бота, финальное сохранение состояния...")
-        state_store.flush_now()
+    
+    bot._scheduler = scheduler 
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Приложение завершено.")
+    asyncio.run(main())
