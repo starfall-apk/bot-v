@@ -321,7 +321,7 @@ def generate_query_variants(raw_query: str) -> list[str]:
     v = normalize_text(translit)
     if v:
         variants.add(v)
-    
+
     # Обработка слитных цифр (EternalII -> Eternal II, Eternal2 -> Eternal 2)
     spaced = re.sub(r'(?i)([a-z])(\d+|iii|ii|iv|v|vi|vii|viii|ix|x)\b', r'\1 \2', raw)
     if spaced != raw:
@@ -340,7 +340,7 @@ def generate_query_variants(raw_query: str) -> list[str]:
                 new_words = words.copy()
                 new_words[i] = roman
                 variants.add(" ".join(new_words))
-                
+
     return list(variants)
 
 
@@ -618,16 +618,16 @@ def guess_image_filenames(display_name: str) -> list[str]:
 
     joined_nospace = "".join(plain_words)
     joined_underscore = "_".join(plain_words)
-    
+
     # Ищем только полные слитные названия (исправлен баг, когда находило одиночное слово вместо составного)
     add(prefix + joined_nospace)
     add(prefix + joined_underscore)
     add(joined_nospace)
     add(joined_underscore)
-    
+
     safe_name = re.sub(r"[^\w\s-]", "", clean).strip().replace(" ", "_")
     add(safe_name)
-    
+
     for i, w in enumerate(plain_words):
         if w.lower() in ROMAN_NUMERALS:
             new_words = plain_words.copy()
@@ -636,8 +636,34 @@ def guess_image_filenames(display_name: str) -> list[str]:
             add(prefix + "_".join(new_words))
             add("".join(new_words))
             add("_".join(new_words))
-            
+
     return [c for c in candidates if c]
+
+
+def _src_is_suspicious_partial_match(src_url: str, display_name: str, full_guesses: list[str]) -> bool:
+    """
+    Обнаруживает случаи, когда скрапнутый src в HTML указывает не на конкретный
+    предмет, а на другой/более общий предмет с похожим/пересекающимся именем.
+    Примеры багов сайта: 'Battleaxe 2' -> src=".../Battleaxe.png" (без номера);
+    'Ginger Luger' -> src=".../Luger.png" (только последнее слово вместо полного имени).
+    В таких случаях src считается подозрительным и не должен ставиться первым
+    в списке кандидатов на изображение.
+    """
+    clean = _strip_name_tags(display_name)
+    words = [re.sub(r"[^\w']", "", w) for w in clean.split()]
+    words = [w for w in words if w]
+    if len(words) < 2:
+        return False  # однословные имена не проверяем — слишком много ложных срабатываний
+    full_guesses_lower = {g.lower() for g in full_guesses}
+    fname = src_url.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+    fname_clean = re.sub(r"[^\w]", "", fname)
+    if not fname_clean:
+        return False
+    if fname_clean in full_guesses_lower:
+        return False  # src совпадает с одним из полных угаданных имён — всё верно
+    # подозрительно, если имя файла совпадает ровно с одним отдельным словом
+    # многословного названия (а не с названием целиком)
+    return any(w.lower() == fname_clean for w in words)
 
 
 def fetch_category(slug: str, rarity_label: str) -> list[Item]:
@@ -722,21 +748,37 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
             m = re.search(r"Stability\s*-\s*([A-Za-z ]+?)(?:\s{2,}|Demand|$)", text_blob)
             if m:
                 stability = m.group(1).strip()
-        image_candidates: list[str] = []
+
+        # Собираем изображение: скрапнутый src из HTML + угаданные имена файлов.
+        # Скрапнутые src, которые выглядят как ссылка на другой/базовый предмет
+        # с похожим именем (баг данных сайта — например, "Battleaxe.png" для
+        # "Battleaxe 2" или "Luger.png" для "Ginger Luger"), откладываются в
+        # конец списка, чтобы правильные угаданные имена пробовались раньше.
+        scraped_candidates: list[str] = []
         img_tag = card.find("img", class_="itemimage") or card.find("img")
         if img_tag:
             for attr in ("src", "data-src", "data-lazy-src"):
                 raw_src = img_tag.get(attr)
                 if raw_src and "N_A" not in raw_src.upper() and "placeholder" not in raw_src.lower():
                     normalized = _normalize_image_src(raw_src)
-                    if normalized and normalized not in image_candidates:
-                        image_candidates.append(normalized)
+                    if normalized and normalized not in scraped_candidates:
+                        scraped_candidates.append(normalized)
         media_dir = f"{BASE_URL}/media/mm2{slug}/"
-        for guess in guess_image_filenames(display_name):
-            candidate = f"{media_dir}{guess}.png"
-            if candidate not in image_candidates:
-                image_candidates.append(candidate)
+        guess_names = guess_image_filenames(display_name)
+        guessed_candidates = [f"{media_dir}{guess}.png" for guess in guess_names]
+
+        trusted_scraped = [
+            u for u in scraped_candidates
+            if not _src_is_suspicious_partial_match(u, display_name, guess_names)
+        ]
+        suspicious_scraped = [u for u in scraped_candidates if u not in trusted_scraped]
+
+        image_candidates: list[str] = []
+        for u in trusted_scraped + guessed_candidates + suspicious_scraped:
+            if u not in image_candidates:
+                image_candidates.append(u)
         image_url = image_candidates[0] if image_candidates else ""
+
         origin = card.get("data-event", "")
         if not origin:
             text_blob = card.get_text(" ", strip=True)
@@ -823,7 +865,7 @@ class ValuesCache:
                     if confirmed not in item.image_url_candidates:
                         item.image_url_candidates.insert(0, confirmed)
                     item.image_url = confirmed
-            
+
             # Собираем индекс ВНЕ лока, чтобы не вешать поиск на 30 секунд
             new_index = self._build_search_index(items)
 
@@ -844,20 +886,20 @@ class ValuesCache:
         with self._lock:
             items = self._items
             index = self._search_index
-            
+
         if not items or not index:
             return []
-            
+
         variants = generate_query_variants(query)
         if not variants:
             return []
-            
+
         allowed_idx: Optional[set[int]] = None
         if filters is not None and not filters.is_empty:
             allowed_idx = {i for i, it in enumerate(items) if filters.matches(it)}
             if not allowed_idx:
                 return []
-                
+
         best_by_idx: dict[int, float] = {}
         CHROMA_WORDS = {"chroma", "хрома", "c"}
 
@@ -869,43 +911,43 @@ class ValuesCache:
             v_norm = normalize_text(variant)
             if not v_norm:
                 continue
-                
+
             query_has_chroma = _has_chroma_word(v_norm)
-            
+
             for entry in index:
                 if allowed_idx is not None and entry.item_idx not in allowed_idx:
                     continue
-                
+
                 # Точное совпадение — абсолютный приоритет
                 if v_norm == entry.key_norm:
                     score = 150.0
-                elif v_norm in entry.key_norm.split(): # если ищем одно слово, и оно полностью есть
+                elif v_norm in entry.key_norm.split():  # если ищем одно слово, и оно полностью есть
                     score = 100.0
                 else:
                     s1 = fuzz.ratio(v_norm, entry.key_norm)
                     s2 = fuzz.token_sort_ratio(v_norm, entry.key_norm)
                     s3 = fuzz.token_set_ratio(v_norm, entry.key_norm)
-                    
+
                     # Штрафуем token_set_ratio, если длины строк сильно различаются
-                    # Это предотвращает баг, когда 'Eternal' давал 100% для 'Eternal III' 
+                    # Это предотвращает баг, когда 'Eternal' давал 100% для 'Eternal III'
                     # или 'Luger' давал 100% для 'Luger Cane'
                     len_ratio = min(len(v_norm), len(entry.key_norm)) / max(1, max(len(v_norm), len(entry.key_norm)))
                     s3_adjusted = s3 * (0.7 + 0.3 * len_ratio)
-                    
+
                     score = max(s1, s2, s3_adjusted)
-                
+
                 entry_has_chroma = _has_chroma_word(entry.key_norm)
                 if query_has_chroma != entry_has_chroma:
                     score = max(0.0, score - 40.0)
                 elif query_has_chroma and entry_has_chroma:
                     score = min(150.0, score + 5.0)
-                    
+
                 if score > best_by_idx.get(entry.item_idx, -1):
                     best_by_idx[entry.item_idx] = float(score)
-                    
+
         if not best_by_idx:
             return []
-            
+
         ranked = sorted(best_by_idx.items(), key=lambda kv: kv[1], reverse=True)
         THRESHOLD = 58.0
         result: list[tuple[Item, float]] = []
@@ -1316,7 +1358,7 @@ def emoji_dict() -> dict[str, str]:
         "wave": emoji("wave"),
         "stats": emoji("stats"),
         "yes": emoji("yes"),
-        "no": emoji("trash"), 
+        "no": emoji("trash"),
         "verify": emoji("verify"),
         "like": emoji("like"),
         "dislike": emoji("dislike"),
@@ -1603,7 +1645,13 @@ def refresh_item_image_candidates(item: Item) -> list[str]:
     api_url = f"https://api.scrapingant.com/v2/general?url={target_url}&x-api-key={SCRAPINGANT_API_KEY}&browser=true"
     fresh_candidates: list[str] = []
     try:
-        resp = requests.get(api_url, timeout=REQUEST_TIMEOUT)
+        resp = requests.get(
+            api_url, timeout=REQUEST_TIMEOUT,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; MM2ValuesBot/1.0)",
+                "Accept": "application/json", "Connection": "close",
+            },
+        )
         if resp.status_code != 200:
             return fresh_candidates
         soup = BeautifulSoup(resp.text, "html.parser")
@@ -1619,19 +1667,25 @@ def refresh_item_image_candidates(item: Item) -> list[str]:
                     name = head.get_text(strip=True)
             if not name or normalize_text(name) != normalize_text(item.name):
                 continue
+            scraped: list[str] = []
             img_tag = card.find("img", class_="itemimage") or card.find("img")
             if img_tag:
                 for attr in ("src", "data-src", "data-lazy-src"):
                     raw = img_tag.get(attr)
                     if raw and "N_A" not in raw.upper() and "placeholder" not in raw.lower():
                         normalized = _normalize_image_src(raw)
-                        if normalized and normalized not in fresh_candidates:
-                            fresh_candidates.append(normalized)
+                        if normalized and normalized not in scraped:
+                            scraped.append(normalized)
             media_dir = f"{BASE_URL}/media/mm2{slug}/"
-            for guess in guess_image_filenames(name):
-                candidate = f"{media_dir}{guess}.png"
-                if candidate not in fresh_candidates:
-                    fresh_candidates.append(candidate)
+            guess_names = guess_image_filenames(name)
+            guessed = [f"{media_dir}{guess}.png" for guess in guess_names]
+
+            trusted = [u for u in scraped if not _src_is_suspicious_partial_match(u, name, guess_names)]
+            suspicious = [u for u in scraped if u not in trusted]
+
+            for u in trusted + guessed + suspicious:
+                if u not in fresh_candidates:
+                    fresh_candidates.append(u)
             break
     except Exception:
         logger.exception("Не удалось обновить URL изображения для %s", item.name)
@@ -1642,11 +1696,11 @@ def download_item_image(item: Item) -> Optional[Image.Image]:
     urls_to_try = []
     if item.image_url:
         urls_to_try.append(item.image_url)
-    
+
     for url in item.image_url_candidates:
         if url not in urls_to_try:
             urls_to_try.append(url)
-            
+
     for url in urls_to_try:
         img = _try_download_single(url)
         if img is not None:
@@ -1654,7 +1708,7 @@ def download_item_image(item: Item) -> Optional[Image.Image]:
                 item.image_url = url
                 state_store.save_known_image_url(normalize_text(item.name), url)
             return img
-            
+
     fresh_candidates = refresh_item_image_candidates(item)
     for fresh_url in fresh_candidates:
         if fresh_url in urls_to_try:
@@ -1665,7 +1719,7 @@ def download_item_image(item: Item) -> Optional[Image.Image]:
             item.image_url_candidates.insert(0, fresh_url)
             state_store.save_known_image_url(normalize_text(item.name), fresh_url)
             return img
-            
+
     return None
 
 
@@ -1748,13 +1802,13 @@ def format_item_caption(item: Item, lang: str) -> str:
     stab_txt = localized_stability(lang, item.stability) if item.stability else t_em(lang, "unknown_stability")
     name_en = item.name or "???"
     name_ru = get_ru_name(item.name) if lang == "ru" else ""
-    
+
     title_icon = emoji('fire') if "chroma" in item.category_slug else emoji('star')
     if name_ru and normalize_text(name_ru) != normalize_text(name_en):
         title = f"<b>{html.escape(name_en)}</b> (<i>{html.escape(name_ru)}</i>)"
     else:
         title = f"<b>{html.escape(name_en)}</b>"
-        
+
     stab_icon = "chart_up"
     if item.stability and item.stability.lower() in ("dropping", "receding", "unstable", "fluctuating"):
         stab_icon = "chart_down"
@@ -1763,10 +1817,10 @@ def format_item_caption(item: Item, lang: str) -> str:
 
     # Исправлен порядок эмодзи (звездочка/квадратик поменяны местами)
     lines = [
-        f"{plate} {title}",
+        f"{emoji('name_tag')} {title}",
         divider(),
         f"{emoji('value')} <b>{t_em(lang, 'value_label')}:</b> ⛁ <b>{item.value_display or 'N/A'}</b>",
-        f"{emoji('name_tag')} <b>{t_em(lang, 'status_label')}:</b> {title_icon} {rarity_label_localized(lang, item.category_slug)}",
+        f"{title_icon} <b>{t_em(lang, 'status_label')}:</b> {plate}",
         f"{emoji(stab_icon)} <b>{t_em(lang, 'stability_label')}:</b> {stab_txt}",
     ]
     if item.origin:
@@ -1986,7 +2040,7 @@ async def status_cmd(message: Message):
         text = t_em(lang, "status_report", count=count, last_update=last_update, error=cache.last_error)
     else:
         text = t_em(lang, "status_report_ok", count=count, last_update=last_update)
-    
+
     if message.from_user.id == ADMIN_ID:
         text += "\n\n" + state_store.get_stats_text()
     await message.answer(text, parse_mode=ParseMode.HTML)
@@ -2079,7 +2133,7 @@ async def cancel_cmd(message: Message, state: FSMContext):
     data = await state.get_data()
     current_state = await state.get_state()
     lang = state_store.get_user_lang(message.from_user.id)
-    
+
     if current_state == AdvertiseStates.wait_text:
         await state.clear()
         await message.answer("Отменено.")
@@ -2111,7 +2165,7 @@ async def process_advertise(message: Message, state: FSMContext):
         await state.clear()
         await message.answer("Отменено.")
         return
-        
+
     entities = message.entities or message.caption_entities or []
     custom_emojis = sorted(
         [e for e in entities if e.type == "custom_emoji"],
@@ -2139,7 +2193,7 @@ async def handle_text(message: Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state is not None:
         return
-        
+
     user_id = message.from_user.id
     lang = state_store.get_user_lang(user_id)
     query = message.text.strip()
@@ -2178,7 +2232,7 @@ async def handle_text(message: Message, state: FSMContext):
         except ValueError:
             await message.answer(t_em(lang, "filters_invalid_number"))
             return
-            
+
         filters_obj = state_store.get_user_filters(user_id)
         if filter_kind == "min":
             if val < 0:
@@ -2329,7 +2383,7 @@ async def main():
     ensure_fonts_downloaded()
     state_store.load_from_channel()
     state_store.start_debounce_worker()
-    
+
     if cache.size == 0:
         logger.info("Кэш пуст, запускаю первичное обновление...")
         cache.refresh()
@@ -2339,20 +2393,20 @@ async def main():
     scheduler.start()
 
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    
+
     class HealthCheckHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
             self.send_header('Content-type', 'text/plain')
             self.end_headers()
             self.wfile.write(b"Bot is running")
-    
+
     server = ThreadingHTTPServer(('0.0.0.0', PORT), HealthCheckHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     logger.info("Бот запущен и готов к работе!")
-    
-    bot._scheduler = scheduler 
+
+    bot._scheduler = scheduler
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
