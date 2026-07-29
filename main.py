@@ -94,99 +94,67 @@ except ImportError:
     logger.warning("deep-translator не установлен.")
 
 # --------------------------------------------------------------------------- #
-# Обновлённые ID премиум-эмодзи (фиолетовый стиль)
+# Обновлённые ID премиум-эмодзи
 # --------------------------------------------------------------------------- #
 
 PREMIUM = {
-    "wave": 5262586680048625238,
-    "stats": 5231200819986047254,
-    "yes": 5316786684833053986,
-    "no": 5316669728578616927,
-    "verify": 5354844694985590087,
-    "like": 5262501394883028496,
-    "dislike": 5262904116786507271,
-    "lang": 5447410659077661506,
-    "filters": 5305265301917549162,
-    "list": 5319295899216654757,
-    "value": 5319065555825605163,
-    "name_tag": 5316562783892945926,
+    "div_dark": 5255779912798710813,
+    "div_light": 5256249601832268668,
+    "name_tag": 5319194297470304045,
+    "candlestick": 5451882707875276247,
     "chart_up": 5244837092042750681,
     "chart_down": 5246762912428603768,
-    "gift": 5192879906295397710,
-    "left": 5316757423220867321,
-    "right": 5316926258385271354,
-    "star": 5316791559620934773,
+    "value": 5319065555825605163,
+    "money_falling": 5316926009277168831,
     "fire": 5355092132346482871,
     "info": 5262831879731555779,
     "refresh": 5375338737028841420,
-    "home": 5416041192905265756,
-    "div_dark": 5255779912798710813,
-    "div_light": 5256249601832268668,
-    "candlestick": 5451882707875276247,
+    "top": 5415655814079723871,
+    "new": 5382357040008021292,
+    "soon": 5440621591387980068,
     "plus": 5397916757333654639,
     "diamond": 5316798019251749107,
     "trash": 5263003781502608081,
     "heart": 5316865463123197927,
+    "lock": 5296369303661067030,
     "rainbow": 5409109841538994759,
-    "settings": 5341715473882955310,
-    "loading": 5319095345718770462,
+    "settings": 5262933846550130144,
+    "clip": 5305265301917549162,
+    "loading": 5318943711898384234,
     "bulb": 5422439311196834318,
+    "free": 5406756500108501710,
     "pencil": 5395444784611480792,
     "red_flag": 5460755126761312667,
+    "home": 5416041192905265756,
     "party": 5461151367559141950,
-    "star2": 5354799331541011105,
+    "star": 5354799331541011105,
     "alarm": 5316960914476384229,
-    "top": 5415655814079723871,
-    "new": 5382357040008021292,
-    "soon": 5440621591387980068,
-    "free": 5406756500108501710,
-    "lock": 5296369303661067030,
+    "wave": 5262586680048625238,
+    "stats": 5262498959636573342,
+    "yes": 5316773048311887967,
+    "verify": 5354844694985590087,
+    "like": 5262501394883028496,
+    "dislike": 5262904116786507271,
+    "lang": 5447410659077661506,
+    "filters": 5264985741405989559,
+    "list": 5265079444707486638,
+    "gift": 5192879906295397710,
+    "left": 5316757423220867321,
+    "right": 5316926258385271354,
 }
 
 FALLBACK_EMOJI = {
-    "wave": "👋",
-    "stats": "📊",
-    "yes": "✅",
-    "no": "❌",
-    "verify": "✅",
-    "like": "👍",
-    "dislike": "👎",
-    "lang": "🌐",
-    "filters": "🎚",
-    "list": "📜",
-    "value": "💵",
-    "name_tag": "📌",
-    "chart_up": "📈",
-    "chart_down": "📉",
-    "gift": "🎁",
-    "left": "⬅️",
-    "right": "➡️",
-    "star": "✨",
-    "fire": "🔥",
-    "info": "ℹ️",
-    "refresh": "🔄",
-    "home": "🏠",
-    "div_dark": "⬛",
-    "div_light": "⬜",
-    "candlestick": "🕯",
-    "plus": "➕",
-    "diamond": "💎",
-    "trash": "🗑",
-    "heart": "💖",
-    "rainbow": "🌈",
-    "settings": "⚙️",
-    "loading": "⌛",
-    "bulb": "💡",
-    "pencil": "✏️",
-    "red_flag": "🚩",
-    "party": "🎉",
-    "star2": "⭐",
-    "alarm": "🚨",
-    "top": "🔝",
-    "new": "🆕",
-    "soon": "🔜",
-    "free": "🆓",
-    "lock": "🔒",
+    "wave": "👋", "stats": "📊", "yes": "✅", "no": "❌", "verify": "✅",
+    "like": "👍", "dislike": "👎", "lang": "🌐", "filters": "🎚",
+    "list": "📜", "value": "💵", "name_tag": "📌", "chart_up": "📈",
+    "chart_down": "📉", "gift": "🎁", "left": "⬅️", "right": "➡️",
+    "star": "✨", "fire": "🔥", "info": "ℹ️", "refresh": "🔄",
+    "home": "🏠", "div_dark": "⬛", "div_light": "⬜", "candlestick": "🕯",
+    "plus": "➕", "diamond": "💎", "trash": "🗑", "heart": "💖",
+    "rainbow": "🌈", "settings": "⚙️", "loading": "⌛", "bulb": "💡",
+    "pencil": "✏️", "red_flag": "🚩", "party": "🎉", "alarm": "🚨",
+    "top": "🔝", "new": "🆕", "soon": "🔜", "free": "🆓", "lock": "🔒",
+    "clip": "📎", "money_falling": "💸"
 }
 
 PLATE_EMOJI_IDS: dict[str, tuple[int, int, int]] = {
@@ -223,7 +191,7 @@ def icon_id(name: str) -> Optional[str]:
 
 def divider() -> str:
     if use_premium():
-        return (emoji("div_dark") + emoji("div_light")) * 5
+        return (emoji("div_dark") + emoji("div_light")) * 3
     return "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 
@@ -353,12 +321,26 @@ def generate_query_variants(raw_query: str) -> list[str]:
     v = normalize_text(translit)
     if v:
         variants.add(v)
+    
+    # Обработка слитных цифр (EternalII -> Eternal II, Eternal2 -> Eternal 2)
+    spaced = re.sub(r'(?i)([a-z])(\d+|iii|ii|iv|v|vi|vii|viii|ix|x)\b', r'\1 \2', raw)
+    if spaced != raw:
+        variants.add(normalize_text(spaced))
+        base = normalize_text(spaced)
+
     words = base.split()
     for i, w in enumerate(words):
+        # Арабские -> Римские и наоборот
         if w in ROMAN_NUMERALS:
             new_words = words.copy()
             new_words[i] = str(ROMAN_NUMERALS[w])
             variants.add(" ".join(new_words))
+        for roman, arabic in ROMAN_NUMERALS.items():
+            if w == str(arabic):
+                new_words = words.copy()
+                new_words[i] = roman
+                variants.add(" ".join(new_words))
+                
     return list(variants)
 
 
@@ -840,9 +822,13 @@ class ValuesCache:
                     if confirmed not in item.image_url_candidates:
                         item.image_url_candidates.insert(0, confirmed)
                     item.image_url = confirmed
+            
+            # Собираем индекс ВНЕ лока, чтобы не вешать поиск на 30 секунд
+            new_index = self._build_search_index(items)
+
             with self._lock:
                 self._items = items
-                self._search_index = self._build_search_index(items)
+                self._search_index = new_index
                 self.last_updated = time.time()
                 self.last_error = None
             logger.info("Кэш обновлён: всего %d предметов.", len(items))
@@ -853,21 +839,24 @@ class ValuesCache:
                 self.last_error = str(e)
             state_store.notify_cache_refreshed()
 
-    def search(self, query: str, limit: int = 5,
-               filters: Optional["ItemFilters"] = None) -> list[tuple[Item, float]]:
+    def search(self, query: str, limit: int = 5, filters: Optional["ItemFilters"] = None) -> list[tuple[Item, float]]:
         with self._lock:
             items = self._items
-            index = list(self._search_index)
+            index = self._search_index
+            
         if not items or not index:
             return []
+            
         variants = generate_query_variants(query)
         if not variants:
             return []
+            
         allowed_idx: Optional[set[int]] = None
         if filters is not None and not filters.is_empty:
             allowed_idx = {i for i, it in enumerate(items) if filters.matches(it)}
             if not allowed_idx:
                 return []
+                
         best_by_idx: dict[int, float] = {}
         CHROMA_WORDS = {"chroma", "хрома", "c"}
 
@@ -877,31 +866,45 @@ class ValuesCache:
 
         for variant in variants:
             v_norm = normalize_text(variant)
-            v_sorted = token_sorted_text(variant)
             if not v_norm:
                 continue
+                
             query_has_chroma = _has_chroma_word(v_norm)
+            
             for entry in index:
                 if allowed_idx is not None and entry.item_idx not in allowed_idx:
                     continue
-                s1 = fuzz.token_sort_ratio(v_norm, entry.key_norm)
-                s2 = fuzz.token_set_ratio(v_norm, entry.key_norm)
-                s3 = fuzz.ratio(v_sorted, entry.key_sorted)
-                score = max(s1, s2, s3)
-                len_diff = abs(len(v_norm) - len(entry.key_norm))
-                if len_diff > 3 and score < 95.0:
-                    score = max(0.0, score - len_diff * 3.0)
+                
+                # Точное совпадение — абсолютный приоритет
+                if v_norm == entry.key_norm:
+                    score = 150.0
+                elif v_norm in entry.key_norm.split(): # если ищем одно слово, и оно полностью есть
+                    score = 100.0
+                else:
+                    s1 = fuzz.ratio(v_norm, entry.key_norm)
+                    s2 = fuzz.token_sort_ratio(v_norm, entry.key_norm)
+                    s3 = fuzz.token_set_ratio(v_norm, entry.key_norm)
+                    
+                    # Штрафуем token_set_ratio, если длины строк сильно различаются
+                    # Это предотвращает баг, когда 'Eternal' давал 100% для 'Eternal III' 
+                    # или 'Luger' давал 100% для 'Luger Cane'
+                    len_ratio = min(len(v_norm), len(entry.key_norm)) / max(1, max(len(v_norm), len(entry.key_norm)))
+                    s3_adjusted = s3 * (0.7 + 0.3 * len_ratio)
+                    
+                    score = max(s1, s2, s3_adjusted)
+                
                 entry_has_chroma = _has_chroma_word(entry.key_norm)
                 if query_has_chroma != entry_has_chroma:
                     score = max(0.0, score - 40.0)
                 elif query_has_chroma and entry_has_chroma:
-                    score = min(100.0, score + 5.0)
-                if s2 >= 100.0:
-                    score = min(100.0, score + 15.0)
+                    score = min(150.0, score + 5.0)
+                    
                 if score > best_by_idx.get(entry.item_idx, -1):
                     best_by_idx[entry.item_idx] = float(score)
+                    
         if not best_by_idx:
             return []
+            
         ranked = sorted(best_by_idx.items(), key=lambda kv: kv[1], reverse=True)
         THRESHOLD = 58.0
         result: list[tuple[Item, float]] = []
@@ -1312,7 +1315,7 @@ def emoji_dict() -> dict[str, str]:
         "wave": emoji("wave"),
         "stats": emoji("stats"),
         "yes": emoji("yes"),
-        "no": emoji("no"),
+        "no": emoji("trash"), 
         "verify": emoji("verify"),
         "like": emoji("like"),
         "dislike": emoji("dislike"),
@@ -1323,6 +1326,7 @@ def emoji_dict() -> dict[str, str]:
         "name_tag": emoji("name_tag"),
         "chart_up": emoji("chart_up"),
         "chart_down": emoji("chart_down"),
+        "money_falling": emoji("money_falling"),
         "gift": emoji("gift"),
         "left": emoji("left"),
         "right": emoji("right"),
@@ -1334,6 +1338,14 @@ def emoji_dict() -> dict[str, str]:
         "settings": emoji("settings"),
         "pencil": emoji("pencil"),
         "lock": emoji("lock"),
+        "clip": emoji("clip"),
+        "loading": emoji("loading"),
+        "party": emoji("party"),
+        "red_flag": emoji("red_flag"),
+        "diamond": emoji("diamond"),
+        "top": emoji("top"),
+        "candlestick": emoji("candlestick"),
+        "alarm": emoji("alarm"),
     }
 
 
@@ -1350,7 +1362,7 @@ def t_em(lang: str, key: str, **kwargs) -> str:
 TEXTS["ru"].update({
     "start": (
         "{wave} <b>Привет!</b> Я бот-оценщик ценности предметов Murder Mystery 2.\n\n"
-        "{pencil} Просто напиши название предмета на русском или английском — например: "
+        "{diamond} Просто напиши название предмета на русском или английском — например: "
         "<i>Хрома пистолет путешественника</i>, <i>Ледокрыло</i> или <i>Nebula</i>.\n\n"
         "📋 <b>Команды:</b>\n"
         "{settings} /settings — язык интерфейса\n"
@@ -1367,22 +1379,22 @@ TEXTS["ru"].update({
         "{stats} /status — статус базы данных"
     ),
     "settings_title": "{settings} <b>Выберите язык интерфейса</b>",
-    "settings_saved": "{yes} Язык сохранён: <b>{lang_name}</b>",
+    "settings_saved": "{verify} Язык сохранён: <b>{lang_name}</b>",
     "not_found": (
-        "😕 Ничего не найдено по запросу «{query}».\n"
+        "{red_flag} Ничего не найдено по запросу «{query}».\n"
         "{pencil} Проверь написание или попробуй другое название предмета.\n"
-        "{filters} Возможно, стоит проверить активные /filters."
+        "{clip} Возможно, стоит проверить активные /filters."
     ),
     "value_label": "Примерная стоимость",
     "status_label": "Категория",
     "stability_label": "Стабильность",
     "origin_label": "Событие",
     "unknown_stability": "Неизвестно",
-    "cache_empty": "⏳ База данных ещё загружается, попробуй через минуту.",
+    "cache_empty": "{loading} База данных ещё загружается, попробуй через минуту.",
     "status_report": (
         "{stats} Предметов в базе: <b>{count}</b>\n"
         "{refresh} Последнее обновление: <b>{last_update}</b>\n"
-        "⚠️ Ошибка последнего обновления: <b>{error}</b>\n"
+        "{alarm} Ошибка последнего обновления: <b>{error}</b>\n"
         "{lock} Хранилище: приватный Telegram-канал"
     ),
     "status_report_ok": (
@@ -1392,10 +1404,10 @@ TEXTS["ru"].update({
     ),
     "never": "ещё не обновлялось",
     "no_error": "нет",
-    "admin_set_refresh": "⚙️ Текущий интервал обновления: {days} дн.\nИспользуйте /setrefresh <число> чтобы изменить (от 1 до 90).",
-    "admin_refresh_updated": "{yes} Интервал обновления изменён на {days} дн.",
-    "admin_refresh_invalid": "{no} Укажите целое число дней от 1 до 90.",
-    "admin_only": "⛔ Эта команда доступна только администратору.",
+    "admin_set_refresh": "{settings} Текущий интервал обновления: {days} дн.\nИспользуйте /setrefresh <число> чтобы изменить (от 1 до 90).",
+    "admin_refresh_updated": "{verify} Интервал обновления изменён на {days} дн.",
+    "admin_refresh_invalid": "{red_flag} Укажите целое число дней от 1 до 90.",
+    "admin_only": "{red_flag} Эта команда доступна только администратору.",
     "filters_title": "{filters} <b>Фильтры поиска</b>\n\nНастрой параметры и нажми «Применить».",
     "filters_btn_min": "Валюта (от): {val}",
     "filters_btn_max": "Валюта (до): {val}",
@@ -1407,16 +1419,16 @@ TEXTS["ru"].update({
     "filters_all": "все",
     "filters_ask_min": "{pencil} Введи <b>минимальное</b> значение цены числом (например: 1000):",
     "filters_ask_max": "{pencil} Введи <b>максимальное</b> значение цены числом, либо -1 для «неограниченно»:",
-    "filters_invalid_number": "{no} Это не похоже на корректное число. Попробуй ещё раз:",
-    "filters_invalid_range": "{no} Минимум не может быть больше максимума. Попробуй ещё раз:",
-    "filters_invalid_negative": "{no} Значение не может быть отрицательным (кроме -1 для «неограниченно»). Попробуй ещё раз:",
-    "filters_saved": "{yes} Значение сохранено",
-    "filters_applied": "{yes} Фильтры применены!",
+    "filters_invalid_number": "{red_flag} Это не похоже на корректное число. Попробуй ещё раз:",
+    "filters_invalid_range": "{red_flag} Минимум не может быть больше максимума. Попробуй ещё раз:",
+    "filters_invalid_negative": "{red_flag} Значение не может быть отрицательным (кроме -1 для «неограниченно»). Попробуй ещё раз:",
+    "filters_saved": "{verify} Значение сохранено",
+    "filters_applied": "{verify} Фильтры применены!",
     "filters_rarity_title": "🏷 <b>Выберите редкость</b>",
     "filters_stability_title": "{chart_up} <b>Выберите стабильность</b>",
     "filters_option_all": "Все",
-    "list_title": "{list} <b>Каталог предметов</b> (дорогие → дешёвые)",
-    "list_empty": "😕 По заданным фильтрам ничего не найдено. Проверь /filters.",
+    "list_title": "{top} <b>Каталог предметов</b> (дорогие → дешёвые)",
+    "list_empty": "{info} По заданным фильтрам ничего не найдено. Проверь /filters.",
     "list_nav_page": "📄 {page}/{total}",
     "feedback_like": "{like} Спасибо за отзыв!",
     "feedback_dislike": "{dislike} Что именно не так?",
@@ -1425,14 +1437,14 @@ TEXTS["ru"].update({
     "feedback_reason_bad_image": "Неверная картинка",
     "feedback_reason_other": "Другое",
     "feedback_ask_details": "{pencil} Опиши подробнее или укажи правильный вариант перевода/названия (или нажми /cancel):",
-    "feedback_sent": "{yes} Спасибо! Администратор получит твой отзыв.",
-    "feedback_cancelled": "{no} Отзыв отменён.",
+    "feedback_sent": "{party} Спасибо! Администратор получит твой отзыв.",
+    "feedback_cancelled": "{trash} Отзыв отменён.",
 })
 
 TEXTS["en"].update({
     "start": (
         "{wave} <b>Hi!</b> I'm a Murder Mystery 2 item value checker bot.\n\n"
-        "{pencil} Just type an item name in English or Russian — for example: "
+        "{diamond} Just type an item name in English or Russian — for example: "
         "<i>Chroma Traveler's Gun</i>, <i>Icewing</i>.\n\n"
         "📋 <b>Commands:</b>\n"
         "{settings} /settings — interface language\n"
@@ -1449,22 +1461,22 @@ TEXTS["en"].update({
         "{stats} /status — database status"
     ),
     "settings_title": "{settings} <b>Choose interface language</b>",
-    "settings_saved": "{yes} Language saved: <b>{lang_name}</b>",
+    "settings_saved": "{verify} Language saved: <b>{lang_name}</b>",
     "not_found": (
-        "😕 Nothing found for «{query}».\n"
+        "{red_flag} Nothing found for «{query}».\n"
         "{pencil} Check the spelling or try another query.\n"
-        "{filters} You may also want to check your active /filters."
+        "{clip} You may also want to check your active /filters."
     ),
     "value_label": "Estimated Value",
     "status_label": "Category",
     "stability_label": "Stability",
     "origin_label": "Origin",
     "unknown_stability": "Unknown",
-    "cache_empty": "⏳ Database is still loading, please try again in a minute.",
+    "cache_empty": "{loading} Database is still loading, please try again in a minute.",
     "status_report": (
         "{stats} Items in database: <b>{count}</b>\n"
         "{refresh} Last update: <b>{last_update}</b>\n"
-        "⚠️ Last update error: <b>{error}</b>\n"
+        "{alarm} Last update error: <b>{error}</b>\n"
         "{lock} Storage: private Telegram channel"
     ),
     "status_report_ok": (
@@ -1474,10 +1486,10 @@ TEXTS["en"].update({
     ),
     "never": "not updated yet",
     "no_error": "none",
-    "admin_set_refresh": "⚙️ Current refresh interval: {days} days.\nUse /setrefresh <number> to change (1–90).",
-    "admin_refresh_updated": "{yes} Refresh interval set to {days} days.",
-    "admin_refresh_invalid": "{no} Please enter an integer from 1 to 90.",
-    "admin_only": "⛔ This command is for the administrator only.",
+    "admin_set_refresh": "{settings} Current refresh interval: {days} days.\nUse /setrefresh <number> to change (1–90).",
+    "admin_refresh_updated": "{verify} Refresh interval set to {days} days.",
+    "admin_refresh_invalid": "{red_flag} Please enter an integer from 1 to 90.",
+    "admin_only": "{red_flag} This command is for the administrator only.",
     "filters_title": "{filters} <b>Search filters</b>\n\nAdjust the parameters and press \"Apply\".",
     "filters_btn_min": "Currency (from): {val}",
     "filters_btn_max": "Currency (to): {val}",
@@ -1489,16 +1501,16 @@ TEXTS["en"].update({
     "filters_all": "all",
     "filters_ask_min": "{pencil} Enter minimum price as a number:",
     "filters_ask_max": "{pencil} Enter maximum price as a number, or -1 for unlimited:",
-    "filters_invalid_number": "{no} Invalid number. Try again:",
-    "filters_invalid_range": "{no} Minimum can't be greater than maximum:",
-    "filters_invalid_negative": "{no} Value can't be negative:",
-    "filters_saved": "{yes} Value saved",
-    "filters_applied": "{yes} Filters applied!",
+    "filters_invalid_number": "{red_flag} Invalid number. Try again:",
+    "filters_invalid_range": "{red_flag} Minimum can't be greater than maximum:",
+    "filters_invalid_negative": "{red_flag} Value can't be negative:",
+    "filters_saved": "{verify} Value saved",
+    "filters_applied": "{verify} Filters applied!",
     "filters_rarity_title": "🏷 <b>Choose rarity</b>",
     "filters_stability_title": "{chart_up} <b>Choose stability</b>",
     "filters_option_all": "All",
-    "list_title": "{list} <b>Item catalog</b>",
-    "list_empty": "😕 Nothing matches your filters.",
+    "list_title": "{top} <b>Item catalog</b>",
+    "list_empty": "{info} Nothing matches your filters.",
     "list_nav_page": "📄 {page}/{total}",
     "feedback_like": "{like} Thanks for your feedback!",
     "feedback_dislike": "{dislike} What's wrong?",
@@ -1507,12 +1519,12 @@ TEXTS["en"].update({
     "feedback_reason_bad_image": "Wrong image",
     "feedback_reason_other": "Other",
     "feedback_ask_details": "{pencil} Describe the problem or suggest correct translation/name (or /cancel):",
-    "feedback_sent": "{yes} Thank you! Administrator will receive your feedback.",
-    "feedback_cancelled": "{no} Feedback cancelled.",
+    "feedback_sent": "{party} Thank you! Administrator will receive your feedback.",
+    "feedback_cancelled": "{trash} Feedback cancelled.",
 })
 
 # --------------------------------------------------------------------------- #
-# Шрифты и картинки (без изменений)
+# Шрифты и картинки
 # --------------------------------------------------------------------------- #
 
 FONTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
@@ -1625,30 +1637,28 @@ def refresh_item_image_candidates(item: Item) -> list[str]:
     return fresh_candidates
 
 
-def _candidate_matches_item(url: str, item_name: str) -> bool:
-    name_clean = _strip_name_tags(item_name).lower()
-    name_words = set(re.findall(r"[a-z0-9]+", name_clean)) - _IMG_STOPWORDS
-    if not name_words:
-        return True
-    url_lower = url.lower()
-    return all(word in url_lower for word in name_words)
-
-
 def download_item_image(item: Item) -> Optional[Image.Image]:
-    candidates = [url for url in item.image_url_candidates if _candidate_matches_item(url, item.name)]
-    if not candidates:
-        candidates = list(item.image_url_candidates)
-    for url in candidates:
+    # Безусловно пробуем известные/найденные URL, без фильтрации по словам (исправлен баг, когда ссылка кэша отклонялась)
+    urls_to_try = []
+    if item.image_url:
+        urls_to_try.append(item.image_url)
+    
+    for url in item.image_url_candidates:
+        if url not in urls_to_try:
+            urls_to_try.append(url)
+            
+    for url in urls_to_try:
         img = _try_download_single(url)
         if img is not None:
             if url != item.image_url:
                 item.image_url = url
-            state_store.save_known_image_url(normalize_text(item.name), url)
+                state_store.save_known_image_url(normalize_text(item.name), url)
             return img
+            
+    # Если ничего не сработало, пробуем пересобрать и обновить напрямую
     fresh_candidates = refresh_item_image_candidates(item)
-    fresh_filtered = [u for u in fresh_candidates if _candidate_matches_item(u, item.name)]
-    for fresh_url in fresh_filtered:
-        if fresh_url in candidates:
+    for fresh_url in fresh_candidates:
+        if fresh_url in urls_to_try:
             continue
         img = _try_download_single(fresh_url)
         if img is not None:
@@ -1656,6 +1666,7 @@ def download_item_image(item: Item) -> Optional[Image.Image]:
             item.image_url_candidates.insert(0, fresh_url)
             state_store.save_known_image_url(normalize_text(item.name), fresh_url)
             return img
+            
     return None
 
 
@@ -1738,16 +1749,25 @@ def format_item_caption(item: Item, lang: str) -> str:
     stab_txt = localized_stability(lang, item.stability) if item.stability else t_em(lang, "unknown_stability")
     name_en = item.name or "???"
     name_ru = get_ru_name(item.name) if lang == "ru" else ""
+    
+    title_icon = emoji('fire') if "chroma" in item.category_slug else emoji('star')
     if name_ru and normalize_text(name_ru) != normalize_text(name_en):
         title = f"<b>{html.escape(name_en)}</b> (<i>{html.escape(name_ru)}</i>)"
     else:
         title = f"<b>{html.escape(name_en)}</b>"
+        
+    stab_icon = "chart_up"
+    if item.stability and item.stability.lower() in ("dropping", "receding", "unstable", "fluctuating"):
+        stab_icon = "chart_down"
+    if item.stability and item.stability.lower() in ("underpaid for", "hoarded"):
+        stab_icon = "money_falling"
+
     lines = [
-        f"{emoji('star')} {title}",
+        f"{title_icon} {title}",
         divider(),
         f"{emoji('value')} <b>{t_em(lang, 'value_label')}:</b> ⛁ <b>{item.value_display or 'N/A'}</b>",
         f"{emoji('name_tag')} <b>{t_em(lang, 'status_label')}:</b> {plate}",
-        f"{emoji('chart_up')} <b>{t_em(lang, 'stability_label')}:</b> {stab_txt}",
+        f"{emoji(stab_icon)} <b>{t_em(lang, 'stability_label')}:</b> {stab_txt}",
     ]
     if item.origin:
         lines.append(f"{emoji('gift')} <b>{t_em(lang, 'origin_label')}:</b> {html.escape(item.origin)}")
@@ -1829,13 +1849,13 @@ def build_filters_keyboard(lang: str, filters: ItemFilters) -> InlineKeyboardMar
             "filt:ask_max", icon_name="value")],
         [make_button_with_emoji(
             t_em(lang, "filters_btn_rarity", val=_filters_summary_value(lang, filters, "rarity")),
-            "filt:rarity_menu")],
+            "filt:rarity_menu", icon_name="diamond")],
         [make_button_with_emoji(
             t_em(lang, "filters_btn_stability", val=_filters_summary_value(lang, filters, "stability")),
             "filt:stability_menu", icon_name="chart_up")],
         [
-            make_button(t_em(lang, "filters_btn_reset"), "filt:reset", style="danger"),
-            make_button(t_em(lang, "filters_btn_apply"), "filt:apply", style="success"),
+            make_button_with_emoji(t_em(lang, "filters_btn_reset"), "filt:reset", icon_name="trash", style="danger"),
+            make_button_with_emoji(t_em(lang, "filters_btn_apply"), "filt:apply", icon_name="verify", style="success"),
         ],
     ])
 
@@ -1991,7 +2011,7 @@ async def setrefresh_cmd(message: Message):
         await message.answer(t_em(lang, "admin_refresh_invalid"))
         return
     state_store.set_refresh_interval_days(days)
-    scheduler = bot_data.get("scheduler")
+    scheduler = message.bot.get("scheduler") if isinstance(message.bot, dict) else None # В случае если scheduler запущен
     if scheduler:
         try:
             scheduler.reschedule_job("cache_refresh", trigger=IntervalTrigger(days=days))
@@ -2243,15 +2263,13 @@ async def callback_handler(callback: CallbackQuery, state: FSMContext):
                                                  reply_markup=build_stability_menu_keyboard(lang, filters_obj))
                 return
             if action.startswith("set_rarity:"):
-                slug = action.split(":")[1]
-                filters_obj.rarity_slug = slug
+                filters_obj.rarity_slug = action.split(":")[1]
                 state_store.set_user_filters(user_id, filters_obj)
                 await callback.message.edit_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
                                                  reply_markup=build_filters_keyboard(lang, filters_obj))
                 return
             if action.startswith("set_stability:"):
-                key = action.split(":")[1]
-                filters_obj.stability_key = key
+                filters_obj.stability_key = action.split(":")[1]
                 state_store.set_user_filters(user_id, filters_obj)
                 await callback.message.edit_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
                                                  reply_markup=build_filters_keyboard(lang, filters_obj))
@@ -2263,136 +2281,105 @@ async def callback_handler(callback: CallbackQuery, state: FSMContext):
                                                  reply_markup=build_filters_keyboard(lang, filters_obj))
                 return
             if action == "apply":
-                await state.update_data(awaiting_filter_input=None)
                 await callback.message.edit_text(t_em(lang, "filters_applied"), parse_mode=ParseMode.HTML)
                 return
             if action == "back":
                 await callback.message.edit_text(t_em(lang, "filters_title"), parse_mode=ParseMode.HTML,
                                                  reply_markup=build_filters_keyboard(lang, filters_obj))
                 return
-            return
 
         if data.startswith("list:"):
-            action = data[5:]
-            if action == "noop":
-                return
-            if action.startswith("page:"):
-                page = int(action.split(":")[1])
+            action = data.split(":")[1]
+            if action == "page":
+                page = int(data.split(":")[2])
                 filters_obj = state_store.get_user_filters(user_id)
                 items = cache.all_items(filters_obj)
+                if not items:
+                    await callback.message.edit_text(t_em(lang, "list_empty"), parse_mode=ParseMode.HTML)
+                    return
                 total_pages = max(1, math.ceil(len(items) / LIST_PAGE_SIZE))
-                page = max(0, min(page, total_pages - 1))
                 text = render_list_page_text(lang, items, page, total_pages)
                 await callback.message.edit_text(text, parse_mode=ParseMode.HTML,
                                                  reply_markup=build_list_keyboard(lang, page, total_pages))
                 return
     except TelegramBadRequest as e:
-        logger.warning("TelegramBadRequest: %s", e)
-    except Exception:
-        logger.exception("Ошибка в обработке callback_query")
-
-
-# --------------------------------------------------------------------------- #
-# Запуск приложения
-# --------------------------------------------------------------------------- #
-
-def reset_webhook_and_cleanup():
-    try:
-        resp = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook", timeout=20)
-        if resp.status_code == 200:
-            logger.info("Вебхук успешно удалён")
-        else:
-            logger.warning("Не удалось удалить вебхук: %s", resp.text)
-        resp = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?offset=-1&timeout=1", timeout=20)
-        if resp.status_code == 200:
-            logger.info("Pending updates очищены")
-        else:
-            logger.warning("Не удалось очистить pending updates: %s", resp.text)
+        logger.warning("BadRequest in callback: %s", e)
     except Exception as e:
-        logger.error("Ошибка при очистке вебхука: %s", e)
+        logger.exception("Ошибка в callback_handler: %s", e)
 
 
-class HealthCheckHandler(BaseHTTPRequestHandler):
+# --------------------------------------------------------------------------- #
+# Сервер Healthcheck
+# --------------------------------------------------------------------------- #
+
+class HealthcheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
-        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.send_header("Content-type", "text/plain")
         self.end_headers()
         self.wfile.write(b"OK")
-
+        
     def log_message(self, format, *args):
-        return
+        pass
 
 
-def run_health_check_server():
-    server_address = ("0.0.0.0", PORT)
-    httpd = ThreadingHTTPServer(server_address, HealthCheckHandler)
-    httpd.serve_forever()
+def run_healthcheck_server():
+    try:
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), HealthcheckHandler)
+        logger.info("Healthcheck сервер запущен на порту %d", PORT)
+        server.serve_forever()
+    except Exception as e:
+        logger.error("Ошибка при запуске healthcheck сервера: %s", e)
 
 
-if __name__ == "__main__":
+# --------------------------------------------------------------------------- #
+# Инициализация и Запуск
+# --------------------------------------------------------------------------- #
+
+async def main():
     ensure_fonts_downloaded()
-    reset_webhook_and_cleanup()
-
-    storage = MemoryStorage()
-    dp = Dispatcher(storage=storage)
-
-    dp.message.register(start_cmd, Command("start"))
-    dp.message.register(help_cmd, Command("help"))
-    dp.message.register(settings_cmd, Command("settings"))
-    dp.message.register(status_cmd, Command("status"))
-    dp.message.register(setrefresh_cmd, Command("setrefresh"))
-    dp.message.register(togglepremium_cmd, Command("togglepremium"))
-    dp.message.register(filters_cmd, Command("filters"))
-    dp.message.register(list_cmd, Command("list"))
-    dp.message.register(force_refresh_cmd, Command("refresh12345"))
-    dp.message.register(cancel_cmd, Command("cancel"))
-    dp.message.register(advertise_cmd, Command("advertise"))
-    dp.message.register(handle_text, F.text)
-    dp.callback_query.register(callback_handler)
-
+    
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-
-    async def on_startup(bot: Bot):
-        threading.Thread(target=run_health_check_server, daemon=True).start()
-        logger.info("Health check сервер запущен на порту %d", PORT)
-
-        loaded = False
-        try:
-            local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), STATE_FILENAME)
-            if os.path.exists(local_path):
-                with open(local_path, "r", encoding="utf-8") as f:
-                    state_store._load_state_dict(json.load(f))
-                logger.info("Состояние загружено из локального файла.")
-                loaded = True
-        except Exception:
-            pass
-        if not loaded:
-            loop = asyncio.get_running_loop()
-            success = await loop.run_in_executor(None, state_store.load_from_channel)
-            if not success:
-                logger.warning("Не удалось загрузить состояние из канала.")
-            else:
-                loaded = True
-        if not loaded or cache.size == 0:
-            logger.info("Запускаем первичный парсинг...")
-            threading.Thread(target=cache.refresh, daemon=True).start()
-        else:
-            logger.info("Кэш восстановлен: %d предметов.", cache.size)
-
-        state_store.start_debounce_worker()
-        scheduler = BackgroundScheduler()
-        scheduler.add_job(cache.refresh, IntervalTrigger(days=state_store.get_refresh_interval_days()), id="cache_refresh")
-        scheduler.start()
-        bot_data["scheduler"] = scheduler
-
-    async def on_shutdown(bot: Bot):
-        scheduler = bot_data.get("scheduler")
-        if scheduler:
-            scheduler.shutdown(wait=False)
+    
+    logger.info("Восстановление состояния из Telegram-канала...")
+    if not state_store.load_from_channel():
+        logger.warning("Не удалось загрузить состояние из канала. Используется чистое состояние.")
+        
+    state_store.start_debounce_worker()
+    
+    scheduler = BackgroundScheduler()
+    days = state_store.get_refresh_interval_days()
+    scheduler.add_job(cache.refresh, IntervalTrigger(days=days), id="cache_refresh", next_run_time=None)
+    scheduler.start()
+    
+    # Чтобы прокинуть scheduler в команды
+    bot_data = {"scheduler": scheduler}
+    dp.workflow_data.update(bot_data)
+    
+    if cache.size == 0:
+        logger.info("Кэш пуст, запускаю фоновое обновление...")
+        threading.Thread(target=cache.refresh, daemon=True).start()
+        
+    server_thread = threading.Thread(target=run_healthcheck_server, daemon=True)
+    server_thread.start()
+    
+    def handle_sigterm(*args):
+        logger.info("Получен SIGTERM. Сохраняю состояние и завершаю работу...")
+        state_store.flush_now()
+        sys.exit(0)
+        
+    signal.signal(signal.SIGTERM, handle_sigterm)
+    signal.signal(signal.SIGINT, handle_sigterm)
+    
+    logger.info("Бот запущен и готов к работе!")
+    try:
+        await dp.start_polling(bot, drop_pending_updates=True)
+    finally:
+        logger.info("Остановка бота, финальное сохранение состояния...")
         state_store.flush_now()
 
-    bot_data = {}
-    dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
-
-    asyncio.run(dp.start_polling(bot, bot_data=bot_data))
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Приложение завершено.")
