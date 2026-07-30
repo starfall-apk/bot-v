@@ -615,6 +615,8 @@ def guess_image_filenames(display_name: str) -> list[str]:
     def add(name: str):
         if name and name not in candidates:
             candidates.append(name)
+        if name and name.lower() not in candidates:
+            candidates.append(name.lower())
 
     joined_nospace = "".join(plain_words)
     joined_underscore = "_".join(plain_words)
@@ -761,10 +763,12 @@ def fetch_category(slug: str, rarity_label: str) -> list[Item]:
             u for u in scraped_candidates
             if not _src_is_suspicious_partial_match(u, display_name, guess_names)
         ]
-        suspicious_scraped = [u for u in scraped_candidates if u not in trusted_scraped]
-
+        
+        # Исправление бага с частичным совпадением имени: 
+        # больше не берем подозрительные картинки (suspicious_scraped), 
+        # чтобы Ginger Luger не брал картинку обычного Luger.
         image_candidates: list[str] = []
-        for u in trusted_scraped + guessed_candidates + suspicious_scraped:
+        for u in trusted_scraped + guessed_candidates:
             if u not in image_candidates:
                 image_candidates.append(u)
         image_url = image_candidates[0] if image_candidates else ""
@@ -1667,9 +1671,9 @@ def refresh_item_image_candidates(item: Item) -> list[str]:
             guessed = [f"{media_dir}{guess}.png" for guess in guess_names]
 
             trusted = [u for u in scraped if not _src_is_suspicious_partial_match(u, name, guess_names)]
-            suspicious = [u for u in scraped if u not in trusted]
-
-            for u in trusted + guessed + suspicious:
+            
+            # Удаляем suspicious пул для предотвращения подстановки неверной картинки
+            for u in trusted + guessed:
                 if u not in fresh_candidates:
                     fresh_candidates.append(u)
             break
@@ -2399,7 +2403,7 @@ async def cancel_cmd(message: Message, state: FSMContext):
 
 
 # Обработчик текстовых сообщений (поиск, ввод фильтров, фидбэк)
-@dp.message(F.text, ~StateFilter("*"))
+@dp.message(F.text, StateFilter(None))
 async def handle_text(message: Message, state: FSMContext):
     user_id = message.from_user.id
     lang = state_store.get_user_lang(user_id)
@@ -2460,8 +2464,12 @@ async def handle_text(message: Message, state: FSMContext):
 
         state_store.set_user_filters(user_id, filters_obj)
         await state.update_data(awaiting_filter_input=None)
-        await message.answer(t_em(lang, "filters_saved"), parse_mode=ParseMode.HTML,
-                             reply_markup=build_filters_keyboard(lang, filters_obj))
+        
+        try:
+            await message.answer(t_em(lang, "filters_saved"), parse_mode=ParseMode.HTML,
+                                 reply_markup=build_filters_keyboard(lang, filters_obj))
+        except TelegramBadRequest:
+            pass
         return
 
     # Обычный Поиск
@@ -2488,7 +2496,10 @@ async def cq_setlang(cq: CallbackQuery):
     code = cq.data.split(":")[1]
     state_store.set_user_lang(cq.from_user.id, code)
     await cq.answer(t_em(code, "settings_saved", lang_name=SUPPORTED_LANGS[code]))
-    await cq.message.edit_text(t_em(code, "settings_saved", lang_name=SUPPORTED_LANGS[code]), parse_mode=ParseMode.HTML)
+    try:
+        await cq.message.edit_text(t_em(code, "settings_saved", lang_name=SUPPORTED_LANGS[code]), parse_mode=ParseMode.HTML)
+    except TelegramBadRequest:
+        pass
 
 
 @dp.callback_query(F.data.startswith("fb:"))
@@ -2500,10 +2511,16 @@ async def cq_feedback(cq: CallbackQuery, state: FSMContext):
     if action == "like":
         state_store.add_feedback(True)
         await cq.answer(t_em(lang, "feedback_like"))
-        await cq.message.edit_reply_markup(reply_markup=None)
+        try:
+            await cq.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest:
+            pass
     elif action == "dislike":
         state_store.add_feedback(False)
-        await cq.message.edit_reply_markup(reply_markup=dislike_reason_keyboard(lang, item_name))
+        try:
+            await cq.message.edit_reply_markup(reply_markup=dislike_reason_keyboard(lang, item_name))
+        except TelegramBadRequest:
+            pass
         await cq.answer()
 
 
@@ -2514,7 +2531,10 @@ async def cq_fb_reason(cq: CallbackQuery, state: FSMContext):
     item_name = parts[2]
     lang = state_store.get_user_lang(cq.from_user.id)
     await state.update_data(awaiting_feedback=item_name, feedback_reason=reason)
-    await cq.message.edit_reply_markup(reply_markup=None)
+    try:
+        await cq.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest:
+        pass
     await cq.message.answer(t_em(lang, "feedback_ask_details"), parse_mode=ParseMode.HTML)
     await cq.answer()
 
@@ -2536,31 +2556,52 @@ async def cq_filters(cq: CallbackQuery, state: FSMContext):
         await cq.message.answer(t_em(lang, "filters_ask_max"), parse_mode=ParseMode.HTML)
         await cq.answer()
     elif action == "rarity_menu":
-        await cq.message.edit_reply_markup(reply_markup=build_rarity_menu_keyboard(lang, filters_obj))
+        try:
+            await cq.message.edit_reply_markup(reply_markup=build_rarity_menu_keyboard(lang, filters_obj))
+        except TelegramBadRequest:
+            pass
         await cq.answer()
     elif action == "stability_menu":
-        await cq.message.edit_reply_markup(reply_markup=build_stability_menu_keyboard(lang, filters_obj))
+        try:
+            await cq.message.edit_reply_markup(reply_markup=build_stability_menu_keyboard(lang, filters_obj))
+        except TelegramBadRequest:
+            pass
         await cq.answer()
     elif action == "set_rarity":
         filters_obj.rarity_slug = parts[2]
         state_store.set_user_filters(user_id, filters_obj)
-        await cq.message.edit_reply_markup(reply_markup=build_rarity_menu_keyboard(lang, filters_obj))
+        try:
+            await cq.message.edit_reply_markup(reply_markup=build_rarity_menu_keyboard(lang, filters_obj))
+        except TelegramBadRequest:
+            pass
         await cq.answer()
     elif action == "set_stability":
         filters_obj.stability_key = parts[2]
         state_store.set_user_filters(user_id, filters_obj)
-        await cq.message.edit_reply_markup(reply_markup=build_stability_menu_keyboard(lang, filters_obj))
+        try:
+            await cq.message.edit_reply_markup(reply_markup=build_stability_menu_keyboard(lang, filters_obj))
+        except TelegramBadRequest:
+            pass
         await cq.answer()
     elif action == "reset":
         state_store.reset_user_filters(user_id)
         filters_obj = state_store.get_user_filters(user_id)
-        await cq.message.edit_reply_markup(reply_markup=build_filters_keyboard(lang, filters_obj))
+        try:
+            await cq.message.edit_reply_markup(reply_markup=build_filters_keyboard(lang, filters_obj))
+        except TelegramBadRequest:
+            pass
         await cq.answer()
     elif action == "apply":
-        await cq.message.edit_text(t_em(lang, "filters_applied"), parse_mode=ParseMode.HTML)
+        try:
+            await cq.message.edit_text(t_em(lang, "filters_applied"), parse_mode=ParseMode.HTML)
+        except TelegramBadRequest:
+            pass
         await cq.answer()
     elif action == "back":
-        await cq.message.edit_reply_markup(reply_markup=build_filters_keyboard(lang, filters_obj))
+        try:
+            await cq.message.edit_reply_markup(reply_markup=build_filters_keyboard(lang, filters_obj))
+        except TelegramBadRequest:
+            pass
         await cq.answer()
 
 
@@ -2583,7 +2624,10 @@ async def cq_list(cq: CallbackQuery):
         await cq.answer()
         return
     text = render_list_page_text(lang, items, page, total_pages)
-    await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=build_list_keyboard(lang, page, total_pages))
+    try:
+        await cq.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=build_list_keyboard(lang, page, total_pages))
+    except TelegramBadRequest:
+        pass
     await cq.answer()
 
 
